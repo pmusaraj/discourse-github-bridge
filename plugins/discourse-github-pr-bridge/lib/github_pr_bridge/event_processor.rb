@@ -128,15 +128,62 @@ module GithubPrBridge
         )
       raise InvalidPayload, "unmapped pull request" if mapping.blank?
 
+      github_comment_id = comment["id"]
+      if github_comment_id.present?
+        return(
+          process_issue_comment_with_github_id(
+            mapping,
+            comment,
+            github_comment_id
+          )
+        )
+      end
+
+      post = create_issue_comment_post(mapping, comment)
+      { topic_id: mapping.topic_id, post_id: post.id, action: "created_reply" }
+    end
+
+    def process_issue_comment_with_github_id(
+      mapping,
+      comment,
+      github_comment_id
+    )
+      DistributedMutex.synchronize(
+        "github_pr_bridge_comment_#{github_comment_id}",
+        validity: 1.minute
+      ) do
+        if CommentMapping.exists?(github_comment_id: github_comment_id)
+          return(
+            { topic_id: mapping.topic_id, action: "skipped_mapped_comment" }
+          )
+        end
+
+        post = create_issue_comment_post(mapping, comment)
+        CommentMapping.create!(
+          pr_topic_mapping: mapping,
+          post: post,
+          github_comment_id: github_comment_id,
+          source: "github"
+        )
+
+        {
+          topic_id: mapping.topic_id,
+          post_id: post.id,
+          action: "created_reply"
+        }
+      end
+    rescue ActiveRecord::RecordNotUnique
+      { topic_id: mapping.topic_id, action: "skipped_mapped_comment" }
+    end
+
+    def create_issue_comment_post(mapping, comment)
       raw = <<~MD.strip
         #{comment["body"]}
 
         — [#{comment.dig("user", "login") || "GitHub user"} on GitHub](#{comment["html_url"]})
       MD
 
-      post =
-        PostCreator.create!(system_user, topic_id: mapping.topic_id, raw: raw)
-      { topic_id: mapping.topic_id, post_id: post.id, action: "created_reply" }
+      PostCreator.create!(system_user, topic_id: mapping.topic_id, raw: raw)
     end
 
     def create_topic(pr, repo_full_name)

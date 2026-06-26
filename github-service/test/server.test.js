@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer, discourseEventsUrl, verifyGitHubSignature } from "../src/server.js";
+import { createServer, discourseEventsUrl, githubIssueCommentsUrl, verifyGitHubSignature } from "../src/server.js";
 import { signDiscourseRequest } from "../src/signature.js";
 
 const config = {
   githubWebhookSecret: "github-secret",
+  githubToken: "github-token",
   discourseBaseUrl: "https://forum.example.com",
   discourseSharedSecret: "discourse-secret"
 };
@@ -145,6 +146,73 @@ test("returns a gateway error when Discourse rejects the forwarded event", async
   });
 });
 
+test("creates GitHub issue comments for signed Discourse events", async () => {
+  const forwardedRequests = [];
+  const server = createServer({
+    config,
+    fetchImpl: async (url, options) => {
+      forwardedRequests.push({ url, options });
+      return jsonResponse({ id: 456, html_url: "https://github.example/comment/456" }, 201);
+    }
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const body = JSON.stringify(discoursePostPayload());
+    const response = await fetch(`${baseUrl}/discourse/events`, {
+      method: "POST",
+      headers: discourseHeaders(body),
+      body
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      status: 201,
+      github_comment_id: 456,
+      github: { id: 456, html_url: "https://github.example/comment/456" }
+    });
+    assert.equal(forwardedRequests.length, 1);
+    assert.equal(
+      forwardedRequests[0].url,
+      githubIssueCommentsUrl({ repo: "discourse/discourse", issueNumber: 123 })
+    );
+    assert.equal(forwardedRequests[0].options.headers.authorization, "Bearer github-token");
+    assert.deepEqual(JSON.parse(forwardedRequests[0].options.body), { body: "Discourse reply" });
+
+    const duplicateResponse = await fetch(`${baseUrl}/discourse/events`, {
+      method: "POST",
+      headers: discourseHeaders(body),
+      body
+    });
+
+    assert.equal(duplicateResponse.status, 200);
+    assert.deepEqual(await duplicateResponse.json(), { ok: true, duplicate: true });
+    assert.equal(forwardedRequests.length, 1);
+  });
+});
+
+test("rejects unsigned Discourse events without forwarding to GitHub", async () => {
+  let forwarded = false;
+  const server = createServer({
+    config,
+    fetchImpl: async () => {
+      forwarded = true;
+      return jsonResponse({ id: 456 }, 201);
+    }
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discourse/events`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(discoursePostPayload())
+    });
+
+    assert.equal(response.status, 403);
+    assert.equal(forwarded, false);
+  });
+});
+
 function githubHeaders({ body, eventName, deliveryId }) {
   return {
     "content-type": "application/json",
@@ -156,6 +224,34 @@ function githubHeaders({ body, eventName, deliveryId }) {
 
 function githubSignature(body, secret) {
   return `sha256=${crypto.createHmac("sha256", secret).update(body).digest("hex")}`;
+}
+
+function discourseHeaders(body) {
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+
+  return {
+    "content-type": "application/json",
+    "x-github-pr-bridge-timestamp": timestamp,
+    "x-github-pr-bridge-signature": signDiscourseRequest({
+      body,
+      timestamp,
+      secret: config.discourseSharedSecret
+    })
+  };
+}
+
+function discoursePostPayload() {
+  return {
+    event_type: "discourse_post_created",
+    event_id: "discourse-post-1",
+    post_id: 1,
+    topic_id: 2,
+    github_repo: "discourse/discourse",
+    github_pr_number: 123,
+    author_username: "penar",
+    post_url: "https://forum.example.com/t/topic/2/2",
+    raw: "Discourse reply"
+  };
 }
 
 function jsonResponse(body, status) {

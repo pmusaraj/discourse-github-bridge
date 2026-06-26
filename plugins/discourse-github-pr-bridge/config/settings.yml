@@ -9,3 +9,6 @@ plugins:
   github_pr_bridge_category_id:
     default: 0
     client: false
+  github_pr_bridge_service_url:
+    default: ""
+    client: false

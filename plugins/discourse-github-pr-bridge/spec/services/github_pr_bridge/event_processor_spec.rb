@@ -51,6 +51,23 @@ RSpec.describe GithubPrBridge::EventProcessor do
     expect(result[:action]).to eq("created_reply")
     expect(result[:topic_id]).to eq(created_topic[:topic_id])
     expect(Post.find(result[:post_id]).raw).to include("Looks good")
+    expect(
+      GithubPrBridge::CommentMapping.find_by(github_comment_id: 987).post_id
+    ).to eq(result[:post_id])
+  end
+
+  it "skips issue comments that already map to a Discourse post" do
+    described_class.call(
+      pull_request_payload(event_id: "delivery-1", title: "Add feature")
+    )
+    described_class.call(issue_comment_payload)
+
+    result =
+      described_class.call(
+        issue_comment_payload.merge("event_id" => "delivery-4")
+      )
+
+    expect(result[:action]).to eq("skipped_mapped_comment")
   end
 
   def pull_request_payload(event_id:, title:)
@@ -95,6 +112,7 @@ RSpec.describe GithubPrBridge::EventProcessor do
         "number" => 123
       },
       "comment" => {
+        "id" => 987,
         "body" => "Looks good",
         "html_url" =>
           "https://github.com/discourse/discourse/pull/123#issuecomment-1",
