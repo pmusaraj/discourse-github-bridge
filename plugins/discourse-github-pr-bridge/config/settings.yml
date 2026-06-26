@@ -1,0 +1,11 @@
+plugins:
+  github_pr_bridge_enabled:
+    default: false
+    client: false
+  github_pr_bridge_shared_secret:
+    default: ""
+    secret: true
+    client: false
+  github_pr_bridge_category_id:
+    default: 0
+    client: false

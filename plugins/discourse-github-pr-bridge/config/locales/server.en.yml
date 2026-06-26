@@ -1,0 +1,5 @@
+en:
+  site_settings:
+    github_pr_bridge_enabled: "Enable the GitHub PR bridge."
+    github_pr_bridge_shared_secret: "Shared secret used to verify signed requests from the GitHub bridge service."
+    github_pr_bridge_category_id: "Category ID where mirrored GitHub PR topics are created."
