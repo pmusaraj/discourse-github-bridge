@@ -126,12 +126,7 @@ export async function forwardToDiscourse({ event, config, fetchImpl = fetch }) {
     body
   });
 
-  let responseBody = null;
-  try {
-    responseBody = await response.json();
-  } catch {
-    responseBody = await response.text();
-  }
+  const responseBody = await parseResponseBody(response);
 
   return {
     ok: response.ok,
@@ -223,12 +218,7 @@ export async function createGitHubIssueComment({ payload, config, fetchImpl = fe
     body: JSON.stringify({ body: payload.raw })
   });
 
-  let responseBody = null;
-  try {
-    responseBody = await response.json();
-  } catch {
-    responseBody = await response.text();
-  }
+  const responseBody = await parseResponseBody(response);
 
   return {
     ok: response.ok,
@@ -240,6 +230,19 @@ export async function createGitHubIssueComment({ payload, config, fetchImpl = fe
 
 export function githubIssueCommentsUrl({ repo, issueNumber }) {
   return new URL(`/repos/${repo}/issues/${issueNumber}/comments`, "https://api.github.com").toString();
+}
+
+async function parseResponseBody(response) {
+  const text = await response.text();
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 function readConfig(config = {}) {

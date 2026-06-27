@@ -146,6 +146,33 @@ test("returns a gateway error when Discourse rejects the forwarded event", async
   });
 });
 
+test("returns text bodies when Discourse rejects with non-JSON", async () => {
+  const server = createServer({
+    config,
+    fetchImpl: async () => new Response("upstream unavailable", { status: 503 })
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const body = JSON.stringify({
+      action: "opened",
+      repository: { full_name: "discourse/discourse" },
+      pull_request: { number: 123 }
+    });
+    const response = await fetch(`${baseUrl}/github/webhook`, {
+      method: "POST",
+      headers: githubHeaders({ body, eventName: "pull_request", deliveryId: "delivery-text" }),
+      body
+    });
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      status: 503,
+      discourse: "upstream unavailable"
+    });
+  });
+});
+
 test("creates GitHub issue comments for signed Discourse events", async () => {
   const forwardedRequests = [];
   const server = createServer({
