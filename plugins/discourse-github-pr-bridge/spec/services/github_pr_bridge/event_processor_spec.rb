@@ -17,6 +17,9 @@ RSpec.describe GithubPrBridge::EventProcessor do
     expect(topic.first_post.raw).to include(
       "**GitHub PR:** [discourse/discourse#123]"
     )
+    expect(topic.first_post.raw).to include("**Draft:** No")
+    expect(topic.first_post.raw).to include("**Changed files:** 4")
+    expect(topic.first_post.raw).to include("**Diff:** +10 / -2")
 
     updated_payload =
       pull_request_payload(event_id: "delivery-2", title: "Add better feature")
@@ -28,6 +31,22 @@ RSpec.describe GithubPrBridge::EventProcessor do
       "[discourse/discourse] PR #123: Add better feature"
     )
     expect(GithubPrBridge::PrTopicMapping.count).to eq(1)
+  end
+
+  it "truncates long pull request titles to fit Discourse topic limits" do
+    long_title = "A" * 400
+
+    result =
+      described_class.call(
+        pull_request_payload(event_id: "delivery-long-title", title: long_title)
+      )
+    topic = Topic.find(result[:topic_id])
+
+    expect(topic.title.length).to be <= SiteSetting.max_topic_title_length
+    expect(topic.title.bytesize).to be <= SiteSetting.max_topic_title_length
+    expect(topic.title.scan(/\S+/).map(&:length).max).to be <= 80
+    expect(topic.title).to include("[long token]")
+    expect(topic.title).to start_with("[discourse/discourse] PR #123: ")
   end
 
   it "deduplicates replayed events" do
@@ -85,6 +104,12 @@ RSpec.describe GithubPrBridge::EventProcessor do
         "body" => "This adds a feature.",
         "state" => "open",
         "merged" => false,
+        "draft" => false,
+        "commits" => 3,
+        "changed_files" => 4,
+        "additions" => 10,
+        "deletions" => 2,
+        "updated_at" => "2026-06-27T21:00:00Z",
         "user" => {
           "login" => "octocat"
         },

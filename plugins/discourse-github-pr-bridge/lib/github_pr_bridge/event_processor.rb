@@ -204,7 +204,16 @@ module GithubPrBridge
     end
 
     def topic_title(pr, repo_full_name)
-      "[#{repo_full_name}] PR ##{pr["number"]}: #{pr["title"]}"
+      repo_label = safe_title_part(repo_full_name)
+      prefix = "[#{repo_label}] PR ##{pr["number"]}: "
+      max_length = SiteSetting.max_topic_title_length
+      title_length = [max_length - prefix.length, 1].max
+      title = safe_title_part(pr["title"])
+
+      truncate_bytes(
+        "#{prefix}#{title.truncate(title_length, omission: "...")}",
+        max_length
+      )
     end
 
     def topic_raw(pr, repo_full_name)
@@ -220,9 +229,15 @@ module GithubPrBridge
         **GitHub PR:** [#{repo_full_name}##{pr["number"]}](#{pr["html_url"]})
         **Author:** #{pr.dig("user", "login") || "Unknown"}
         **State:** #{pr_state(pr)}
+        **Draft:** #{yes_no(pr["draft"])}
         **Base:** #{pr.dig("base", "ref") || "unknown"}
         **Head:** #{pr.dig("head", "ref") || "unknown"}
+        **Head SHA:** #{short_sha(pr.dig("head", "sha"))}
+        **Commits:** #{metadata_value(pr["commits"])}
+        **Changed files:** #{metadata_value(pr["changed_files"])}
+        **Diff:** +#{metadata_value(pr["additions"])} / -#{metadata_value(pr["deletions"])}
         **Labels:** #{labels}
+        **Updated:** #{metadata_value(pr["updated_at"])}
       MD
     end
 
@@ -230,6 +245,36 @@ module GithubPrBridge
       return "merged" if pr["merged"]
 
       pr["state"].to_s
+    end
+
+    def yes_no(value)
+      value ? "Yes" : "No"
+    end
+
+    def safe_title_part(value)
+      value.to_s.gsub(/\S{40,}/, "[long token]")
+    end
+
+    def truncate_bytes(value, max_bytes)
+      return value if value.bytesize <= max_bytes
+
+      omission = "..."
+      allowed_bytes = max_bytes - omission.bytesize
+      truncated = +""
+      value.each_char do |character|
+        break if truncated.bytesize + character.bytesize > allowed_bytes
+
+        truncated << character
+      end
+      "#{truncated}#{omission}"
+    end
+
+    def short_sha(value)
+      value.present? ? value.to_s[0, 12] : "unknown"
+    end
+
+    def metadata_value(value)
+      value.presence || "unknown"
     end
 
     def category_id
