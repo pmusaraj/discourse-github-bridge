@@ -22,6 +22,7 @@ Required environment variables:
 - `DISCOURSE_BASE_URL`: Base URL for the Discourse site, for example `https://forum.example.com`.
 - `DISCOURSE_SHARED_SECRET`: Shared secret that matches the Discourse `github_pr_bridge_shared_secret` site setting.
 - `PORT`: optional, defaults to `3000`.
+- `PROCESSED_EVENTS_PATH`: optional JSONL path for durable Discourse-originated event idempotency. If omitted, duplicate protection is in-memory only and resets when the service restarts.
 
 Run locally:
 

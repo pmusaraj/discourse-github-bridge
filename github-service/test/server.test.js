@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createServer, discourseEventsUrl, githubIssueCommentsUrl, verifyGitHubSignature } from "../src/server.js";
 import { signDiscourseRequest } from "../src/signature.js";
 
@@ -8,7 +11,8 @@ const config = {
   githubWebhookSecret: "github-secret",
   githubToken: "github-token",
   discourseBaseUrl: "https://forum.example.com",
-  discourseSharedSecret: "discourse-secret"
+  discourseSharedSecret: "discourse-secret",
+  processedEventsPath: ""
 };
 
 test("verifies GitHub webhook signatures", () => {
@@ -214,6 +218,191 @@ test("creates GitHub issue comments for signed Discourse events", async () => {
 
     assert.equal(duplicateResponse.status, 200);
     assert.deepEqual(await duplicateResponse.json(), { ok: true, duplicate: true });
+    assert.equal(forwardedRequests.length, 1);
+  });
+});
+
+test("deduplicates signed Discourse events across service restarts", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "github-pr-bridge-"));
+  const processedEventsPath = join(tempDir, "processed-events.jsonl");
+  const persistentConfig = { ...config, processedEventsPath };
+
+  try {
+    const firstForwardedRequests = [];
+    const firstServer = createServer({
+      config: persistentConfig,
+      fetchImpl: async (url, options) => {
+        firstForwardedRequests.push({ url, options });
+        return jsonResponse({ id: 456 }, 201);
+      }
+    });
+
+    const body = JSON.stringify(discoursePostPayload());
+    await withListeningServer(firstServer, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/discourse/events`, {
+        method: "POST",
+        headers: discourseHeaders(body),
+        body
+      });
+
+      assert.equal(response.status, 200);
+      assert.equal(firstForwardedRequests.length, 1);
+    });
+
+    const secondForwardedRequests = [];
+    const secondServer = createServer({
+      config: persistentConfig,
+      fetchImpl: async (url, options) => {
+        secondForwardedRequests.push({ url, options });
+        return jsonResponse({ id: 789 }, 201);
+      }
+    });
+
+    await withListeningServer(secondServer, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/discourse/events`, {
+        method: "POST",
+        headers: discourseHeaders(body),
+        body
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { ok: true, duplicate: true });
+      assert.equal(secondForwardedRequests.length, 0);
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("allows failed signed Discourse events to be retried after restart", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "github-pr-bridge-"));
+  const processedEventsPath = join(tempDir, "processed-events.jsonl");
+  const persistentConfig = { ...config, processedEventsPath };
+
+  try {
+    const body = JSON.stringify(discoursePostPayload());
+    const firstServer = createServer({
+      config: persistentConfig,
+      fetchImpl: async () => jsonResponse({ message: "temporary failure" }, 503)
+    });
+
+    await withListeningServer(firstServer, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/discourse/events`, {
+        method: "POST",
+        headers: discourseHeaders(body),
+        body
+      });
+
+      assert.equal(response.status, 502);
+    });
+
+    const forwardedRequests = [];
+    const secondServer = createServer({
+      config: persistentConfig,
+      fetchImpl: async (url, options) => {
+        forwardedRequests.push({ url, options });
+        return jsonResponse({ id: 789 }, 201);
+      }
+    });
+
+    await withListeningServer(secondServer, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/discourse/events`, {
+        method: "POST",
+        headers: discourseHeaders(body),
+        body
+      });
+
+      assert.equal(response.status, 200);
+      assert.equal(forwardedRequests.length, 1);
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("allows errored signed Discourse events to be retried after restart", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "github-pr-bridge-"));
+  const processedEventsPath = join(tempDir, "processed-events.jsonl");
+  const persistentConfig = { ...config, processedEventsPath };
+
+  try {
+    const body = JSON.stringify(discoursePostPayload());
+    const firstServer = createServer({
+      config: persistentConfig,
+      fetchImpl: async () => {
+        throw new Error("network unavailable");
+      }
+    });
+
+    await withListeningServer(firstServer, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/discourse/events`, {
+        method: "POST",
+        headers: discourseHeaders(body),
+        body
+      });
+
+      assert.equal(response.status, 500);
+    });
+
+    const forwardedRequests = [];
+    const secondServer = createServer({
+      config: persistentConfig,
+      fetchImpl: async (url, options) => {
+        forwardedRequests.push({ url, options });
+        return jsonResponse({ id: 789 }, 201);
+      }
+    });
+
+    await withListeningServer(secondServer, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/discourse/events`, {
+        method: "POST",
+        headers: discourseHeaders(body),
+        body
+      });
+
+      assert.equal(response.status, 200);
+      assert.equal(forwardedRequests.length, 1);
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("deduplicates concurrent signed Discourse events while the first request is in flight", async () => {
+  const forwardedRequests = [];
+  let resolveGitHub;
+  const githubResponse = new Promise((resolve) => {
+    resolveGitHub = resolve;
+  });
+  const server = createServer({
+    config,
+    fetchImpl: async (url, options) => {
+      forwardedRequests.push({ url, options });
+      return githubResponse;
+    }
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const body = JSON.stringify(discoursePostPayload());
+    const requestOptions = {
+      method: "POST",
+      headers: discourseHeaders(body),
+      body
+    };
+    const firstRequest = fetch(`${baseUrl}/discourse/events`, requestOptions);
+
+    while (forwardedRequests.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    const secondResponse = await fetch(`${baseUrl}/discourse/events`, requestOptions);
+    assert.equal(secondResponse.status, 200);
+    assert.deepEqual(await secondResponse.json(), { ok: true, duplicate: true, processing: true });
+    assert.equal(forwardedRequests.length, 1);
+
+    resolveGitHub(jsonResponse({ id: 456 }, 201));
+    const firstResponse = await firstRequest;
+    assert.equal(firstResponse.status, 200);
     assert.equal(forwardedRequests.length, 1);
   });
 });
