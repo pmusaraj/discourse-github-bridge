@@ -6,6 +6,8 @@ module GithubPrBridge
     end
 
     SUPPORTED_EVENTS = %w[pull_request issue_comment].freeze
+    MANAGED_LABEL_TAGS_FIELD = "github_pr_bridge_label_tags"
+    STATUS_ACTION_CODE = "github_pr_bridge_status_changed"
 
     def self.call(payload)
       new(payload).call
@@ -80,16 +82,21 @@ module GithubPrBridge
         )
 
       if mapping
+        previous_state = mapping.github_pr_state
+        new_state = pr_state(pr)
         update_topic(mapping.topic, pr, repo_full_name)
+        sync_topic_labels(mapping.topic, pr)
+        add_status_small_action(mapping.topic, previous_state, new_state)
         mapping.update!(
           github_pr_node_id: pr["node_id"],
           github_pr_url: pr["html_url"],
           github_pr_head_sha: pr.dig("head", "sha"),
-          github_pr_state: pr_state(pr)
+          github_pr_state: new_state
         )
         { topic_id: mapping.topic_id, action: "updated_topic" }
       else
         topic = create_topic(pr, repo_full_name)
+        sync_topic_labels(topic, pr)
         PrTopicMapping.create!(
           github_repo: repo_full_name,
           github_pr_number: number,
@@ -201,6 +208,71 @@ module GithubPrBridge
         title: topic_title(pr, repo_full_name),
         raw: topic_raw(pr, repo_full_name)
       )
+    end
+
+    def add_status_small_action(topic, previous_state, new_state)
+      return if previous_state.blank? || new_state.blank?
+      return if previous_state == new_state
+
+      topic.add_moderator_post(
+        system_user,
+        "GitHub PR status changed from #{previous_state} to #{new_state}.",
+        post_type: Post.types[:small_action],
+        action_code: STATUS_ACTION_CODE
+      )
+    end
+
+    def sync_topic_labels(topic, pr)
+      return if !SiteSetting.tagging_enabled?
+
+      previous_label_tags = managed_label_tags(topic)
+      next_label_tags = label_tag_names(pr)
+      current_tags = topic.tags.pluck(:name)
+      desired_tags = (current_tags - previous_label_tags + next_label_tags).uniq
+
+      if current_tags.sort == desired_tags.sort
+        if previous_label_tags.sort != next_label_tags.sort
+          save_managed_label_tags(topic, next_label_tags)
+        end
+        return
+      end
+
+      if !DiscourseTagging.tag_topic_by_names(
+           topic,
+           system_user.guardian,
+           desired_tags
+         )
+        Rails.logger.warn(
+          "GitHub PR bridge could not sync labels to Discourse tags: #{topic.errors.full_messages.join(", ")}"
+        )
+        return
+      end
+
+      local_tags = current_tags - previous_label_tags
+      actual_label_tags = topic.reload.tags.pluck(:name) - local_tags
+      save_managed_label_tags(topic, actual_label_tags)
+    end
+
+    def save_managed_label_tags(topic, tag_names)
+      topic.custom_fields[MANAGED_LABEL_TAGS_FIELD] = tag_names.to_json
+      topic.save_custom_fields(true)
+    end
+
+    def managed_label_tags(topic)
+      raw_value = topic.custom_fields[MANAGED_LABEL_TAGS_FIELD]
+      return [] if raw_value.blank?
+
+      JSON.parse(raw_value)
+    rescue JSON::ParserError
+      []
+    end
+
+    def label_tag_names(pr)
+      label_names =
+        Array(pr["labels"]).filter_map { |label| label["name"].presence }
+      return [] if label_names.blank?
+
+      DiscourseTagging.tags_for_saving(label_names, system_user.guardian) || []
     end
 
     def topic_title(pr, repo_full_name)

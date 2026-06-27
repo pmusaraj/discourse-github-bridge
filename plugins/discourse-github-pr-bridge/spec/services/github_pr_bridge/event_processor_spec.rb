@@ -3,7 +3,12 @@
 RSpec.describe GithubPrBridge::EventProcessor do
   fab!(:category)
 
-  before { SiteSetting.github_pr_bridge_category_id = category.id }
+  before do
+    SiteSetting.github_pr_bridge_category_id = category.id
+    SiteSetting.tagging_enabled = true
+    SiteSetting.create_tag_allowed_groups = Group::AUTO_GROUPS[:trust_level_0]
+    SiteSetting.tag_topic_allowed_groups = Group::AUTO_GROUPS[:trust_level_0]
+  end
 
   it "creates and updates a topic for a pull request" do
     opened_payload =
@@ -31,6 +36,9 @@ RSpec.describe GithubPrBridge::EventProcessor do
       "[discourse/discourse] PR #123: Add better feature"
     )
     expect(GithubPrBridge::PrTopicMapping.count).to eq(1)
+    expect(topic.posts.where(post_type: Post.types[:small_action]).count).to eq(
+      0
+    )
   end
 
   it "truncates long pull request titles to fit Discourse topic limits" do
@@ -47,6 +55,67 @@ RSpec.describe GithubPrBridge::EventProcessor do
     expect(topic.title.scan(/\S+/).map(&:length).max).to be <= 80
     expect(topic.title).to include("[long token]")
     expect(topic.title).to start_with("[discourse/discourse] PR #123: ")
+  end
+
+  it "records PR state changes as small action posts" do
+    described_class.call(
+      pull_request_payload(event_id: "delivery-1", title: "Add feature")
+    )
+
+    result =
+      described_class.call(
+        pull_request_payload(
+          event_id: "delivery-2",
+          title: "Add feature",
+          pr_attrs: {
+            "state" => "closed"
+          }
+        )
+      )
+
+    topic = Topic.find(result[:topic_id])
+    small_action = topic.posts.where(post_type: Post.types[:small_action]).last
+    expect(small_action.raw).to eq(
+      "GitHub PR status changed from open to closed."
+    )
+    expect(small_action.action_code).to eq("github_pr_bridge_status_changed")
+  end
+
+  it "syncs GitHub labels to Discourse tags while preserving local tags" do
+    described_class.call(
+      pull_request_payload(
+        event_id: "delivery-1",
+        title: "Add feature",
+        labels: ["Feature Request", "needs review"]
+      )
+    )
+    mapping = GithubPrBridge::PrTopicMapping.find_by(github_pr_number: 123)
+    topic = mapping.topic
+    local_tag = Tag.create!(name: "local-only")
+    topic.tags << local_tag
+
+    described_class.call(
+      pull_request_payload(
+        event_id: "delivery-2",
+        title: "Add feature",
+        labels: ["bug fix"]
+      )
+    )
+
+    expect(topic.reload.tags.pluck(:name)).to contain_exactly(
+      "bug-fix",
+      "local-only"
+    )
+
+    described_class.call(
+      pull_request_payload(
+        event_id: "delivery-3",
+        title: "Add feature",
+        labels: []
+      )
+    )
+
+    expect(topic.reload.tags.pluck(:name)).to contain_exactly("local-only")
   end
 
   it "deduplicates replayed events" do
@@ -89,7 +158,7 @@ RSpec.describe GithubPrBridge::EventProcessor do
     expect(result[:action]).to eq("skipped_mapped_comment")
   end
 
-  def pull_request_payload(event_id:, title:)
+  def pull_request_payload(event_id:, title:, pr_attrs: {}, labels: ["feature"])
     {
       "event_id" => event_id,
       "event_type" => "pull_request",
@@ -120,8 +189,8 @@ RSpec.describe GithubPrBridge::EventProcessor do
           "ref" => "feature",
           "sha" => "abc123"
         },
-        "labels" => [{ "name" => "feature" }]
-      }
+        "labels" => labels.map { |name| { "name" => name } }
+      }.merge(pr_attrs)
     }
   end
 
