@@ -23,6 +23,8 @@ Required environment variables:
 - `DISCOURSE_SHARED_SECRET`: Shared secret that matches the Discourse `github_pr_bridge_shared_secret` site setting.
 - `PORT`: optional, defaults to `3000`.
 - `PROCESSED_EVENTS_PATH`: optional JSONL path for durable Discourse-originated event idempotency. If omitted, duplicate protection is in-memory only and resets when the service restarts.
+- `RETRY_ATTEMPTS`: optional total attempt count for transient Discourse forwarding failures, defaults to `3`.
+- `RETRY_DELAY_MS`: optional initial retry delay in milliseconds, defaults to `500` and uses exponential backoff. GitHub comment creation is not retried because the GitHub API call is not idempotent.
 
 Run locally:
 

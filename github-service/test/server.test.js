@@ -4,7 +4,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createServer, discourseEventsUrl, githubIssueCommentsUrl, verifyGitHubSignature } from "../src/server.js";
+import {
+  createGitHubIssueComment,
+  createServer,
+  discourseEventsUrl,
+  forwardToDiscourse,
+  githubIssueCommentsUrl,
+  verifyGitHubSignature
+} from "../src/server.js";
 import { signDiscourseRequest } from "../src/signature.js";
 
 const config = {
@@ -12,7 +19,9 @@ const config = {
   githubToken: "github-token",
   discourseBaseUrl: "https://forum.example.com",
   discourseSharedSecret: "discourse-secret",
-  processedEventsPath: ""
+  processedEventsPath: "",
+  retryDelayMs: 0,
+  logger: captureLogger([])
 };
 
 test("verifies GitHub webhook signatures", () => {
@@ -69,6 +78,57 @@ test("forwards valid pull_request webhooks to Discourse", async () => {
     const signature = forwardedRequests[0].options.headers["x-github-pr-bridge-signature"];
     assert.equal(signature, signDiscourseRequest({ body: forwardedBody, timestamp, secret: config.discourseSharedSecret }));
   });
+});
+
+test("retries transient Discourse forwarding failures and logs attempts", async () => {
+  const logs = [];
+  const retryConfig = {
+    ...config,
+    logger: captureLogger(logs),
+    retryDelayMs: 0
+  };
+  let attempts = 0;
+
+  const result = await forwardToDiscourse({
+    event: { event_id: "delivery-retry", event_type: "pull_request" },
+    config: retryConfig,
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return jsonResponse({ error: "temporary" }, 503);
+      }
+
+      return jsonResponse({ ok: true, action: "updated_topic" }, 200);
+    }
+  });
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(result, {
+    ok: true,
+    status: 200,
+    discourse: { ok: true, action: "updated_topic" }
+  });
+  assert.deepEqual(logs.map((log) => [log.level, log.message]), [
+    ["warn", "discourse_forward_retry"]
+  ]);
+});
+
+test("does not retry GitHub comment creation after ambiguous network errors", async () => {
+  let attempts = 0;
+
+  await assert.rejects(
+    () => createGitHubIssueComment({
+      payload: discoursePostPayload(),
+      config,
+      fetchImpl: async () => {
+        attempts += 1;
+        throw new Error("network unavailable");
+      }
+    }),
+    /network unavailable/
+  );
+
+  assert.equal(attempts, 1);
 });
 
 test("rejects invalid GitHub signatures without forwarding", async () => {
@@ -428,6 +488,14 @@ test("rejects unsigned Discourse events without forwarding to GitHub", async () 
     assert.equal(forwarded, false);
   });
 });
+
+function captureLogger(logs) {
+  return {
+    info: (message, fields = {}) => logs.push({ level: "info", message, ...fields }),
+    warn: (message, fields = {}) => logs.push({ level: "warn", message, ...fields }),
+    error: (message, fields = {}) => logs.push({ level: "error", message, ...fields })
+  };
+}
 
 function githubHeaders({ body, eventName, deliveryId }) {
   return {

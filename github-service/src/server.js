@@ -6,6 +6,9 @@ import { normalizeGitHubWebhook } from "./normalize.js";
 import { signDiscourseRequest } from "./signature.js";
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
+const DEFAULT_RETRY_ATTEMPTS = 3;
+const DEFAULT_RETRY_DELAY_MS = 500;
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 export function createServer({ config, fetchImpl = fetch } = {}) {
   const resolvedConfig = readConfig(config);
@@ -118,14 +121,23 @@ export async function forwardToDiscourse({ event, config, fetchImpl = fetch }) {
     secret: config.discourseSharedSecret
   });
 
-  const response = await fetchImpl(discourseEventsUrl(config.discourseBaseUrl), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-github-pr-bridge-timestamp": timestamp,
-      "x-github-pr-bridge-signature": signature
-    },
-    body
+  const response = await fetchWithRetry({
+    config,
+    operation: () => fetchImpl(discourseEventsUrl(config.discourseBaseUrl), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-github-pr-bridge-timestamp": timestamp,
+        "x-github-pr-bridge-signature": signature
+      },
+      body
+    }),
+    retryMessage: "discourse_forward_retry",
+    context: {
+      direction: "github_to_discourse",
+      event_id: event.event_id,
+      event_type: event.event_type
+    }
   });
 
   const responseBody = await parseResponseBody(response);
@@ -254,6 +266,67 @@ async function parseResponseBody(response) {
   }
 }
 
+async function fetchWithRetry({ config, operation, retryMessage, context = {} }) {
+  const maxAttempts = Math.max(1, config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS);
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await operation();
+      if (!shouldRetryResponse(response) || attempt === maxAttempts) {
+        return response;
+      }
+
+      logRetry(config, retryMessage, { ...context, attempt, max_attempts: maxAttempts, status: response.status });
+      await cancelResponseBody(response);
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxAttempts) {
+        throw error;
+      }
+
+      logRetry(config, retryMessage, { ...context, attempt, max_attempts: maxAttempts, error: safeErrorName(error) });
+    }
+
+    await sleep(retryDelayMs(config, attempt));
+  }
+
+  throw lastError;
+}
+
+async function cancelResponseBody(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Ignore cancellation failures; the retry attempt should still proceed.
+  }
+}
+
+function safeErrorName(error) {
+  return error?.name || "Error";
+}
+
+function shouldRetryResponse(response) {
+  return RETRYABLE_STATUSES.has(response.status);
+}
+
+function logRetry(config, message, fields) {
+  (config.logger ?? createJsonLogger()).warn(message, fields);
+}
+
+function retryDelayMs(config, attempt) {
+  const baseDelay = config.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  return baseDelay * 2 ** (attempt - 1);
+}
+
+function sleep(delayMs) {
+  if (delayMs <= 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
 function createProcessedDiscourseEventStore(processedEventsPath) {
   if (processedEventsPath) {
     return new JsonlProcessedEventStore(processedEventsPath);
@@ -369,17 +442,52 @@ class JsonlProcessedEventStore {
   }
 }
 
+function numberConfig(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function createJsonLogger() {
+  return {
+    info: (message, fields = {}) => writeJsonLog("info", message, fields),
+    warn: (message, fields = {}) => writeJsonLog("warn", message, fields),
+    error: (message, fields = {}) => writeJsonLog("error", message, fields)
+  };
+}
+
+function writeJsonLog(level, message, fields) {
+  const record = {
+    level,
+    message,
+    timestamp: new Date().toISOString(),
+    ...fields
+  };
+  const output = JSON.stringify(record);
+  if (level === "error") {
+    console.error(output);
+  } else {
+    console.log(output);
+  }
+}
+
 function readConfig(config = {}) {
   const resolved = {
     githubWebhookSecret: config.githubWebhookSecret ?? process.env.GITHUB_WEBHOOK_SECRET,
     githubToken: config.githubToken ?? process.env.GITHUB_TOKEN,
     discourseBaseUrl: config.discourseBaseUrl ?? process.env.DISCOURSE_BASE_URL,
     discourseSharedSecret: config.discourseSharedSecret ?? process.env.DISCOURSE_SHARED_SECRET,
-    processedEventsPath: config.processedEventsPath ?? process.env.PROCESSED_EVENTS_PATH
+    processedEventsPath: config.processedEventsPath ?? process.env.PROCESSED_EVENTS_PATH,
+    retryAttempts: numberConfig(config.retryAttempts ?? process.env.RETRY_ATTEMPTS, DEFAULT_RETRY_ATTEMPTS),
+    retryDelayMs: numberConfig(config.retryDelayMs ?? process.env.RETRY_DELAY_MS, DEFAULT_RETRY_DELAY_MS),
+    logger: config.logger ?? createJsonLogger()
   };
 
   for (const [key, value] of Object.entries(resolved)) {
-    if (!["githubToken", "processedEventsPath"].includes(key) && !value) {
+    if (!["githubToken", "processedEventsPath", "retryAttempts", "retryDelayMs", "logger"].includes(key) && !value) {
       throw new Error(`${key} is required`);
     }
   }
