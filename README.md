@@ -5,7 +5,19 @@ A split bridge for mirroring GitHub pull requests into Discourse topics.
 - `plugins/discourse-github-pr-bridge`: Discourse plugin that owns PR/topic mappings and signed bridge endpoints.
 - `github-service`: External GitHub webhook/service process that normalizes GitHub events and signs requests into Discourse.
 
-This repository follows the planned architecture in `/Users/pmusaraj/Projects/discourse-github-pr-bridge-plan.md`.
+## Testing
+
+When testing against the local Discourse Docker container, run:
+
+```sh
+scripts/rspec-in-discourse-container.sh
+```
+
+The helper starts a localhost Redis forwarder inside the web container when needed, migrates the test database, and then runs the plugin RSpec suite. Pass a spec path to run a focused file:
+
+```sh
+scripts/rspec-in-discourse-container.sh plugins/discourse-github-pr-bridge/spec/services/github_pr_bridge/event_processor_spec.rb
+```
 
 ## GitHub service
 
