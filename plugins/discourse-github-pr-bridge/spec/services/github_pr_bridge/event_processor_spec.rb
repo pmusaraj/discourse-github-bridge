@@ -109,6 +109,31 @@ RSpec.describe GithubPrBridge::EventProcessor do
     expect(mapping.github_pr_recent_activity_summary).to eq("checks success")
   end
 
+  it "records GitHub review state as small action posts" do
+    created_topic =
+      described_class.call(
+        pull_request_payload(event_id: "delivery-1", title: "Add feature")
+      )
+
+    result = described_class.call(pull_request_review_payload)
+
+    expect(result[:action]).to eq("created_review_action")
+    expect(result[:topic_id]).to eq(created_topic[:topic_id])
+
+    topic = Topic.find(result[:topic_id])
+    small_action = topic.posts.where(post_type: Post.types[:small_action]).last
+    expect(small_action.raw).to eq(
+      "GitHub review approved by reviewer. https://github.com/discourse/discourse/pull/123#pullrequestreview-1"
+    )
+    expect(small_action.action_code).to eq("github_pr_bridge_review_changed")
+
+    mapping = GithubPrBridge::PrTopicMapping.find_by(github_pr_number: 123)
+    expect(mapping.github_pr_review_state).to eq("approved")
+    expect(mapping.github_pr_recent_activity_summary).to eq(
+      "approved by reviewer"
+    )
+  end
+
   it "syncs GitHub labels to Discourse tags while preserving local tags" do
     described_class.call(
       pull_request_payload(
@@ -260,6 +285,29 @@ RSpec.describe GithubPrBridge::EventProcessor do
         "html_url" => "https://github.com/discourse/discourse/actions/runs/1",
         "completed_at" => "2026-06-29T12:30:00Z",
         "pull_requests" => [{ "number" => 123 }]
+      }
+    }
+  end
+
+  def pull_request_review_payload
+    {
+      "event_id" => "delivery-review-1",
+      "event_type" => "pull_request_review",
+      "action" => "submitted",
+      "repository" => {
+        "full_name" => "discourse/discourse"
+      },
+      "pull_request" => {
+        "number" => 123
+      },
+      "review" => {
+        "state" => "approved",
+        "html_url" =>
+          "https://github.com/discourse/discourse/pull/123#pullrequestreview-1",
+        "submitted_at" => "2026-06-29T12:45:00Z",
+        "user" => {
+          "login" => "reviewer"
+        }
       }
     }
   end

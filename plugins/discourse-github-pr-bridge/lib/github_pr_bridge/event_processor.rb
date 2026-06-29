@@ -7,6 +7,7 @@ module GithubPrBridge
 
     SUPPORTED_EVENTS = %w[
       pull_request
+      pull_request_review
       issue_comment
       check_run
       check_suite
@@ -14,6 +15,7 @@ module GithubPrBridge
     MANAGED_LABEL_TAGS_FIELD = "github_pr_bridge_label_tags"
     STATUS_ACTION_CODE = "github_pr_bridge_status_changed"
     CHECK_ACTION_CODE = "github_pr_bridge_check_changed"
+    REVIEW_ACTION_CODE = "github_pr_bridge_review_changed"
 
     def self.call(payload)
       new(payload).call
@@ -58,6 +60,8 @@ module GithubPrBridge
       case event_type
       when "pull_request"
         process_pull_request
+      when "pull_request_review"
+        process_pull_request_review
       when "issue_comment"
         process_issue_comment
       when "check_run", "check_suite"
@@ -203,6 +207,43 @@ module GithubPrBridge
       { topic_id: mapping.topic_id, action: "skipped_mapped_comment" }
     end
 
+    def process_pull_request_review
+      pr =
+        payload.fetch("pull_request") do
+          raise InvalidPayload, "missing pull_request"
+        end
+      review =
+        payload.fetch("review") { raise InvalidPayload, "missing review" }
+      repo_full_name =
+        payload.dig("repository", "full_name") ||
+          raise(InvalidPayload, "missing repository full_name")
+      number =
+        pr.fetch("number") do
+          raise InvalidPayload, "missing pull_request number"
+        end
+
+      mapping =
+        PrTopicMapping.find_by(
+          github_repo: repo_full_name,
+          github_pr_number: number
+        )
+      return { action: "skipped_unmapped_review" } if mapping.blank?
+
+      mapping.topic.add_moderator_post(
+        system_user,
+        review_action_message(review),
+        post_type: Post.types[:small_action],
+        action_code: REVIEW_ACTION_CODE
+      )
+      mapping.update!(
+        github_pr_review_state: review_state(review),
+        github_pr_recent_activity_at: event_activity_time(review),
+        github_pr_recent_activity_summary: review_activity_summary(review)
+      )
+
+      { topic_id: mapping.topic_id, action: "created_review_action" }
+    end
+
     def process_check_event
       repo_full_name =
         payload.dig("repository", "full_name") ||
@@ -231,6 +272,32 @@ module GithubPrBridge
       )
 
       { topic_id: mapping.topic_id, action: "created_check_action" }
+    end
+
+    def review_action_message(review)
+      state = review_state(review).humanize.downcase
+      author = review.dig("user", "login").presence || "GitHub reviewer"
+      url = review["html_url"].presence
+      message = "GitHub review #{state} by #{author}."
+      url.present? ? "#{message} #{url}" : message
+    end
+
+    def review_state(review)
+      state = review["state"].to_s.downcase
+      case state
+      when "approved", "changes_requested", "commented"
+        state
+      when "dismissed"
+        "review_required"
+      else
+        "unknown"
+      end
+    end
+
+    def review_activity_summary(review)
+      state = review_state(review)
+      author = review.dig("user", "login").presence
+      author.present? ? "#{state.humanize.downcase} by #{author}" : state
     end
 
     def check_payload
@@ -266,8 +333,9 @@ module GithubPrBridge
 
     def event_activity_time(source)
       Time.zone.parse(
-        source["updated_at"].presence || source["completed_at"].presence ||
-          source["started_at"].presence || Time.zone.now.iso8601
+        source["updated_at"].presence || source["submitted_at"].presence ||
+          source["completed_at"].presence || source["started_at"].presence ||
+          Time.zone.now.iso8601
       )
     end
 
