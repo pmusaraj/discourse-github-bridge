@@ -80,6 +80,52 @@ test("forwards valid pull_request webhooks to Discourse", async () => {
   });
 });
 
+test("forwards valid check_run webhooks to Discourse", async () => {
+  const forwardedRequests = [];
+  const server = createServer({
+    config,
+    fetchImpl: async (url, options) => {
+      forwardedRequests.push({ url, options });
+      return jsonResponse({ ok: true, action: "created_check_action" }, 200);
+    }
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const body = JSON.stringify({
+      action: "completed",
+      repository: { full_name: "discourse/discourse" },
+      check_run: {
+        name: "Lint",
+        status: "completed",
+        conclusion: "success",
+        pull_requests: [{ number: 123 }]
+      }
+    });
+
+    const response = await fetch(`${baseUrl}/github/webhook`, {
+      method: "POST",
+      headers: githubHeaders({ body, eventName: "check_run", deliveryId: "delivery-check-run" }),
+      body
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(forwardedRequests.length, 1);
+
+    assert.deepEqual(JSON.parse(forwardedRequests[0].options.body), {
+      event_id: "delivery-check-run",
+      event_type: "check_run",
+      action: "completed",
+      repository: { full_name: "discourse/discourse" },
+      check_run: {
+        name: "Lint",
+        status: "completed",
+        conclusion: "success",
+        pull_requests: [{ number: 123 }]
+      }
+    });
+  });
+});
+
 test("retries transient Discourse forwarding failures and logs attempts", async () => {
   const logs = [];
   const retryConfig = {

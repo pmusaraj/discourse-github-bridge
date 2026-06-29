@@ -5,9 +5,15 @@ module GithubPrBridge
     class InvalidPayload < StandardError
     end
 
-    SUPPORTED_EVENTS = %w[pull_request issue_comment].freeze
+    SUPPORTED_EVENTS = %w[
+      pull_request
+      issue_comment
+      check_run
+      check_suite
+    ].freeze
     MANAGED_LABEL_TAGS_FIELD = "github_pr_bridge_label_tags"
     STATUS_ACTION_CODE = "github_pr_bridge_status_changed"
+    CHECK_ACTION_CODE = "github_pr_bridge_check_changed"
 
     def self.call(payload)
       new(payload).call
@@ -54,6 +60,8 @@ module GithubPrBridge
         process_pull_request
       when "issue_comment"
         process_issue_comment
+      when "check_run", "check_suite"
+        process_check_event
       end
     end
 
@@ -181,6 +189,51 @@ module GithubPrBridge
       end
     rescue ActiveRecord::RecordNotUnique
       { topic_id: mapping.topic_id, action: "skipped_mapped_comment" }
+    end
+
+    def process_check_event
+      repo_full_name =
+        payload.dig("repository", "full_name") ||
+          raise(InvalidPayload, "missing repository full_name")
+      check = check_payload
+      number = check_pr_number(check)
+      raise InvalidPayload, "missing pull request number" if number.blank?
+
+      mapping =
+        PrTopicMapping.find_by(
+          github_repo: repo_full_name,
+          github_pr_number: number
+        )
+      return { action: "skipped_unmapped_check" } if mapping.blank?
+
+      mapping.topic.add_moderator_post(
+        system_user,
+        check_action_message(check),
+        post_type: Post.types[:small_action],
+        action_code: CHECK_ACTION_CODE
+      )
+
+      { topic_id: mapping.topic_id, action: "created_check_action" }
+    end
+
+    def check_payload
+      payload[event_type] || raise(InvalidPayload, "missing #{event_type}")
+    end
+
+    def check_pr_number(check)
+      Array(check["pull_requests"]).first&.dig("number")
+    end
+
+    def check_action_message(check)
+      name =
+        check["name"].presence || check["app"]&.dig("name").presence ||
+          "Check suite"
+      status = check["status"].presence || "unknown"
+      conclusion = check["conclusion"].presence
+      state = conclusion.present? ? "#{status}: #{conclusion}" : status
+      url = check["html_url"].presence
+      message = "GitHub check \"#{name}\" #{state}."
+      url.present? ? "#{message} #{url}" : message
     end
 
     def create_issue_comment_post(mapping, comment)

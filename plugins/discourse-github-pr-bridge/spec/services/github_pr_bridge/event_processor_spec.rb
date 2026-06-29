@@ -81,6 +81,25 @@ RSpec.describe GithubPrBridge::EventProcessor do
     expect(small_action.action_code).to eq("github_pr_bridge_status_changed")
   end
 
+  it "records GitHub check run state as small action posts" do
+    created_topic =
+      described_class.call(
+        pull_request_payload(event_id: "delivery-1", title: "Add feature")
+      )
+
+    result = described_class.call(check_run_payload)
+
+    expect(result[:action]).to eq("created_check_action")
+    expect(result[:topic_id]).to eq(created_topic[:topic_id])
+
+    topic = Topic.find(result[:topic_id])
+    small_action = topic.posts.where(post_type: Post.types[:small_action]).last
+    expect(small_action.raw).to eq(
+      "GitHub check \"Lint\" completed: success. https://github.com/discourse/discourse/actions/runs/1"
+    )
+    expect(small_action.action_code).to eq("github_pr_bridge_check_changed")
+  end
+
   it "syncs GitHub labels to Discourse tags while preserving local tags" do
     described_class.call(
       pull_request_payload(
@@ -213,6 +232,24 @@ RSpec.describe GithubPrBridge::EventProcessor do
         "user" => {
           "login" => "reviewer"
         }
+      }
+    }
+  end
+
+  def check_run_payload
+    {
+      "event_id" => "delivery-check-run-1",
+      "event_type" => "check_run",
+      "action" => "completed",
+      "repository" => {
+        "full_name" => "discourse/discourse"
+      },
+      "check_run" => {
+        "name" => "Lint",
+        "status" => "completed",
+        "conclusion" => "success",
+        "html_url" => "https://github.com/discourse/discourse/actions/runs/1",
+        "pull_requests" => [{ "number" => 123 }]
       }
     }
   end
