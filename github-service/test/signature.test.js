@@ -56,9 +56,27 @@ test("normalizes pull request reviews", () => {
   assert.equal(normalized.review.state, "approved");
 });
 
+test("normalizes push events", () => {
+  const normalized = normalizeGitHubWebhook({
+    eventName: "push",
+    deliveryId: "delivery-push",
+    payload: {
+      ref: "refs/heads/feature",
+      before: "abc123",
+      after: "def456",
+      repository: { full_name: "discourse/discourse" }
+    }
+  });
+
+  assert.equal(normalized.event_id, "delivery-push");
+  assert.equal(normalized.event_type, "push");
+  assert.equal(normalized.repository.full_name, "discourse/discourse");
+  assert.equal(normalized.push.after, "def456");
+});
+
 test("rejects unsupported webhook events", () => {
   assert.throws(
-    () => normalizeGitHubWebhook({ eventName: "push", deliveryId: "delivery-3", payload: {} }),
+    () => normalizeGitHubWebhook({ eventName: "status", deliveryId: "delivery-3", payload: {} }),
     /unsupported event/
   );
 });

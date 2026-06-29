@@ -134,6 +134,50 @@ RSpec.describe GithubPrBridge::EventProcessor do
     )
   end
 
+  it "records GitHub push head SHA changes as small action posts" do
+    created_topic =
+      described_class.call(
+        pull_request_payload(event_id: "delivery-1", title: "Add feature")
+      )
+
+    result = described_class.call(push_payload)
+
+    expect(result[:action]).to eq("created_push_actions")
+    expect(result[:topic_count]).to eq(1)
+
+    topic = Topic.find(created_topic[:topic_id])
+    small_action = topic.posts.where(post_type: Post.types[:small_action]).last
+    expect(small_action.raw).to eq(
+      "GitHub pushed 2 commits to feature (def456). https://github.com/discourse/discourse/compare/abc123...def456"
+    )
+    expect(small_action.action_code).to eq("github_pr_bridge_push_changed")
+
+    mapping = GithubPrBridge::PrTopicMapping.find_by(github_pr_number: 123)
+    expect(mapping.github_pr_head_sha).to eq("def456")
+    expect(mapping.github_pr_recent_activity_summary).to eq("2 commits pushed")
+  end
+
+  it "skips push events that are not normal branch updates" do
+    described_class.call(
+      pull_request_payload(event_id: "delivery-1", title: "Add feature")
+    )
+
+    result =
+      described_class.call(
+        push_payload(
+          event_id: "delivery-push-delete",
+          push_attrs: {
+            "deleted" => true,
+            "after" => "0" * 40
+          }
+        )
+      )
+
+    expect(result[:action]).to eq("skipped_non_branch_push")
+    mapping = GithubPrBridge::PrTopicMapping.find_by(github_pr_number: 123)
+    expect(mapping.github_pr_head_sha).to eq("abc123")
+  end
+
   it "syncs GitHub labels to Discourse tags while preserving local tags" do
     described_class.call(
       pull_request_payload(
@@ -309,6 +353,29 @@ RSpec.describe GithubPrBridge::EventProcessor do
           "login" => "reviewer"
         }
       }
+    }
+  end
+
+  def push_payload(event_id: "delivery-push-1", push_attrs: {})
+    {
+      "event_id" => event_id,
+      "event_type" => "push",
+      "repository" => {
+        "full_name" => "discourse/discourse"
+      },
+      "push" => {
+        "ref" => "refs/heads/feature",
+        "before" => "abc123",
+        "after" => "def456",
+        "compare" =>
+          "https://github.com/discourse/discourse/compare/abc123...def456",
+        "commits" => [{ "id" => "c1" }, { "id" => "c2" }],
+        "head_commit" => {
+          "id" => "def456",
+          "timestamp" => "2026-06-29T13:00:00Z",
+          "url" => "https://github.com/discourse/discourse/commit/def456"
+        }
+      }.merge(push_attrs)
     }
   end
 end

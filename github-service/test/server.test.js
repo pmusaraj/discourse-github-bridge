@@ -168,6 +168,49 @@ test("forwards valid pull_request_review webhooks to Discourse", async () => {
   });
 });
 
+test("forwards valid push webhooks to Discourse", async () => {
+  const forwardedRequests = [];
+  const server = createServer({
+    config,
+    fetchImpl: async (url, options) => {
+      forwardedRequests.push({ url, options });
+      return jsonResponse({ ok: true, action: "created_push_actions" }, 200);
+    }
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const body = JSON.stringify({
+      ref: "refs/heads/feature",
+      before: "abc123",
+      after: "def456",
+      repository: { full_name: "discourse/discourse" },
+      commits: [{ id: "def456" }]
+    });
+
+    const response = await fetch(`${baseUrl}/github/webhook`, {
+      method: "POST",
+      headers: githubHeaders({ body, eventName: "push", deliveryId: "delivery-push" }),
+      body
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(forwardedRequests.length, 1);
+
+    assert.deepEqual(JSON.parse(forwardedRequests[0].options.body), {
+      event_id: "delivery-push",
+      event_type: "push",
+      repository: { full_name: "discourse/discourse" },
+      push: {
+        ref: "refs/heads/feature",
+        before: "abc123",
+        after: "def456",
+        repository: { full_name: "discourse/discourse" },
+        commits: [{ id: "def456" }]
+      }
+    });
+  });
+});
+
 test("retries transient Discourse forwarding failures and logs attempts", async () => {
   const logs = [];
   const retryConfig = {
@@ -261,7 +304,7 @@ test("ignores unsupported GitHub events without forwarding", async () => {
     const body = JSON.stringify({ ref: "refs/heads/main" });
     const response = await fetch(`${baseUrl}/github/webhook`, {
       method: "POST",
-      headers: githubHeaders({ body, eventName: "push", deliveryId: "delivery-1" }),
+      headers: githubHeaders({ body, eventName: "status", deliveryId: "delivery-1" }),
       body
     });
 

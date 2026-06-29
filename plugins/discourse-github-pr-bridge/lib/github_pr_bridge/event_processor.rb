@@ -9,6 +9,7 @@ module GithubPrBridge
       pull_request
       pull_request_review
       issue_comment
+      push
       check_run
       check_suite
     ].freeze
@@ -16,6 +17,7 @@ module GithubPrBridge
     STATUS_ACTION_CODE = "github_pr_bridge_status_changed"
     CHECK_ACTION_CODE = "github_pr_bridge_check_changed"
     REVIEW_ACTION_CODE = "github_pr_bridge_review_changed"
+    PUSH_ACTION_CODE = "github_pr_bridge_push_changed"
 
     def self.call(payload)
       new(payload).call
@@ -64,6 +66,8 @@ module GithubPrBridge
         process_pull_request_review
       when "issue_comment"
         process_issue_comment
+      when "push"
+        process_push
       when "check_run", "check_suite"
         process_check_event
       end
@@ -244,6 +248,43 @@ module GithubPrBridge
       { topic_id: mapping.topic_id, action: "created_review_action" }
     end
 
+    def process_push
+      push = payload.fetch("push") { raise InvalidPayload, "missing push" }
+      repo_full_name =
+        payload.dig("repository", "full_name") ||
+          push.dig("repository", "full_name") ||
+          raise(InvalidPayload, "missing repository full_name")
+      before_sha = push["before"].presence
+      after_sha = push["after"].presence
+      raise InvalidPayload, "missing push before sha" if before_sha.blank?
+      raise InvalidPayload, "missing push after sha" if after_sha.blank?
+      return { action: "skipped_non_branch_push" } if !branch_update_push?(push)
+
+      mappings =
+        PrTopicMapping.where(
+          github_repo: repo_full_name,
+          github_pr_head_sha: before_sha
+        ).to_a
+      return { action: "skipped_unmapped_push" } if mappings.blank?
+
+      mappings.each do |mapping|
+        mapping.topic.add_moderator_post(
+          system_user,
+          push_action_message(push),
+          post_type: Post.types[:small_action],
+          action_code: PUSH_ACTION_CODE
+        )
+        mapping.update!(
+          github_pr_head_sha: after_sha,
+          github_pr_recent_activity_at:
+            event_activity_time(push_head_commit(push)),
+          github_pr_recent_activity_summary: push_activity_summary(push)
+        )
+      end
+
+      { action: "created_push_actions", topic_count: mappings.count }
+    end
+
     def process_check_event
       repo_full_name =
         payload.dig("repository", "full_name") ||
@@ -272,6 +313,35 @@ module GithubPrBridge
       )
 
       { topic_id: mapping.topic_id, action: "created_check_action" }
+    end
+
+    def branch_update_push?(push)
+      push["ref"].to_s.start_with?("refs/heads/") && !push["deleted"] &&
+        !zero_sha?(push["after"])
+    end
+
+    def zero_sha?(value)
+      value.to_s.match?(/\A0+\z/)
+    end
+
+    def push_action_message(push)
+      commit_count = Array(push["commits"]).length
+      ref = push["ref"].to_s.sub(%r{\Arefs/heads/}, "")
+      summary = commit_count == 1 ? "1 commit" : "#{commit_count} commits"
+      sha = short_sha(push["after"])
+      url = push["compare"].presence || push_head_commit(push)["url"].presence
+      message =
+        "GitHub pushed #{summary} to #{ref.presence || "the PR branch"} (#{sha})."
+      url.present? ? "#{message} #{url}" : message
+    end
+
+    def push_activity_summary(push)
+      commit_count = Array(push["commits"]).length
+      commit_count == 1 ? "1 commit pushed" : "#{commit_count} commits pushed"
+    end
+
+    def push_head_commit(push)
+      push["head_commit"].presence || Array(push["commits"]).last || push
     end
 
     def review_action_message(review)
@@ -335,7 +405,7 @@ module GithubPrBridge
       Time.zone.parse(
         source["updated_at"].presence || source["submitted_at"].presence ||
           source["completed_at"].presence || source["started_at"].presence ||
-          Time.zone.now.iso8601
+          source["timestamp"].presence || Time.zone.now.iso8601
       )
     end
 
