@@ -1,0 +1,30 @@
+.github-pr-bridge-topic-list-status {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.2rem;
+  font-size: var(--font-down-1);
+  line-height: var(--line-height-small);
+}
+
+.github-pr-bridge-topic-list-status__badge {
+  border: 1px solid var(--primary-low-mid);
+  border-radius: var(--d-border-radius);
+  color: var(--primary-medium);
+  padding: 0.05rem 0.35rem;
+  text-decoration: none;
+}
+
+.github-pr-bridge-topic-list-status__badge--pr {
+  color: var(--tertiary);
+}
+
+.github-pr-bridge-topic-list-status__badge--checks,
+.github-pr-bridge-topic-list-status__badge--review {
+  background: var(--primary-very-low);
+}
+
+.github-pr-bridge-topic-list-status__activity {
+  color: var(--primary-medium);
+}

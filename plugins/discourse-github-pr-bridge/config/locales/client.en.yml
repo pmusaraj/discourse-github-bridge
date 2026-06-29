@@ -1,0 +1,31 @@
+en:
+  js:
+    github_pr_bridge:
+      topic_list:
+        pr_label: "PR #%{number} %{state}"
+        pr_states:
+          open: "open"
+          closed: "closed"
+          merged: "merged"
+          draft: "draft"
+          unknown: "unknown"
+        check_states:
+          pending: "checks pending"
+          queued: "checks pending"
+          in_progress: "checks pending"
+          completed: "checks complete"
+          success: "checks passing"
+          failure: "checks failing"
+          cancelled: "checks cancelled"
+          skipped: "checks skipped"
+          neutral: "checks neutral"
+          timed_out: "checks timed out"
+          action_required: "checks need action"
+          unknown: "checks unknown"
+        review_states:
+          approved: "approved"
+          changes_requested: "changes requested"
+          review_required: "review required"
+          commented: "review commented"
+          dismissed: "review dismissed"
+          unknown: "review unknown"
