@@ -27,6 +27,16 @@ after_initialize do
     post "/github-pr-bridge/events" => "github_pr_bridge/events#create"
   end
 
+  add_to_serializer(
+    :topic_list_item,
+    :github_pr_bridge_status,
+    include_condition: -> do
+      GithubPrBridge::PrTopicMapping.exists?(topic_id: object.id)
+    end
+  ) do
+    GithubPrBridge::PrTopicMapping.find_by(topic_id: object.id)&.status_payload
+  end
+
   on(:post_created) do |post|
     next if !SiteSetting.github_pr_bridge_enabled?
 

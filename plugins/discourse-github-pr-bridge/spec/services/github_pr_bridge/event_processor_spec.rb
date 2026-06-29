@@ -25,6 +25,11 @@ RSpec.describe GithubPrBridge::EventProcessor do
     expect(topic.first_post.raw).to include("**Draft:** No")
     expect(topic.first_post.raw).to include("**Changed files:** 4")
     expect(topic.first_post.raw).to include("**Diff:** +10 / -2")
+    mapping = GithubPrBridge::PrTopicMapping.find_by(github_pr_number: 123)
+    expect(mapping.github_pr_state).to eq("open")
+    expect(mapping.github_pr_draft).to eq(false)
+    expect(mapping.github_pr_merged).to eq(false)
+    expect(mapping.github_pr_recent_activity_summary).to eq("PR opened")
 
     updated_payload =
       pull_request_payload(event_id: "delivery-2", title: "Add better feature")
@@ -98,6 +103,10 @@ RSpec.describe GithubPrBridge::EventProcessor do
       "GitHub check \"Lint\" completed: success. https://github.com/discourse/discourse/actions/runs/1"
     )
     expect(small_action.action_code).to eq("github_pr_bridge_check_changed")
+
+    mapping = GithubPrBridge::PrTopicMapping.find_by(github_pr_number: 123)
+    expect(mapping.github_pr_checks_state).to eq("success")
+    expect(mapping.github_pr_recent_activity_summary).to eq("checks success")
   end
 
   it "syncs GitHub labels to Discourse tags while preserving local tags" do
@@ -249,6 +258,7 @@ RSpec.describe GithubPrBridge::EventProcessor do
         "status" => "completed",
         "conclusion" => "success",
         "html_url" => "https://github.com/discourse/discourse/actions/runs/1",
+        "completed_at" => "2026-06-29T12:30:00Z",
         "pull_requests" => [{ "number" => 123 }]
       }
     }

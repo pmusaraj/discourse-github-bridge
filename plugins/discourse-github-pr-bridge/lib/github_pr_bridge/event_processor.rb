@@ -99,7 +99,11 @@ module GithubPrBridge
           github_pr_node_id: pr["node_id"],
           github_pr_url: pr["html_url"],
           github_pr_head_sha: pr.dig("head", "sha"),
-          github_pr_state: new_state
+          github_pr_state: new_state,
+          github_pr_draft: pr["draft"] || false,
+          github_pr_merged: pr["merged"] || false,
+          github_pr_recent_activity_at: event_activity_time(pr),
+          github_pr_recent_activity_summary: "PR updated"
         )
         { topic_id: mapping.topic_id, action: "updated_topic" }
       else
@@ -112,6 +116,10 @@ module GithubPrBridge
           github_pr_url: pr["html_url"],
           github_pr_head_sha: pr.dig("head", "sha"),
           github_pr_state: pr_state(pr),
+          github_pr_draft: pr["draft"] || false,
+          github_pr_merged: pr["merged"] || false,
+          github_pr_recent_activity_at: event_activity_time(pr),
+          github_pr_recent_activity_summary: "PR opened",
           topic: topic
         )
         { topic_id: topic.id, action: "created_topic" }
@@ -180,6 +188,10 @@ module GithubPrBridge
           github_comment_id: github_comment_id,
           source: "github"
         )
+        mapping.update!(
+          github_pr_recent_activity_at: event_activity_time(comment),
+          github_pr_recent_activity_summary: "new GitHub comment"
+        )
 
         {
           topic_id: mapping.topic_id,
@@ -212,6 +224,11 @@ module GithubPrBridge
         post_type: Post.types[:small_action],
         action_code: CHECK_ACTION_CODE
       )
+      mapping.update!(
+        github_pr_checks_state: check_state(check),
+        github_pr_recent_activity_at: event_activity_time(check),
+        github_pr_recent_activity_summary: check_activity_summary(check)
+      )
 
       { topic_id: mapping.topic_id, action: "created_check_action" }
     end
@@ -234,6 +251,24 @@ module GithubPrBridge
       url = check["html_url"].presence
       message = "GitHub check \"#{name}\" #{state}."
       url.present? ? "#{message} #{url}" : message
+    end
+
+    def check_state(check)
+      conclusion = check["conclusion"].presence
+      return conclusion if conclusion.present?
+
+      check["status"].presence || "unknown"
+    end
+
+    def check_activity_summary(check)
+      "checks #{check_state(check)}"
+    end
+
+    def event_activity_time(source)
+      Time.zone.parse(
+        source["updated_at"].presence || source["completed_at"].presence ||
+          source["started_at"].presence || Time.zone.now.iso8601
+      )
     end
 
     def create_issue_comment_post(mapping, comment)
