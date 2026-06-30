@@ -6,6 +6,7 @@
 # authors: Penar Musaraj
 
 enabled_site_setting :github_pr_bridge_enabled
+register_asset "stylesheets/common/github-pr-bridge-topic-list-status.scss"
 
 module ::GithubPrBridge
   PLUGIN_NAME = "discourse-github-pr-bridge"

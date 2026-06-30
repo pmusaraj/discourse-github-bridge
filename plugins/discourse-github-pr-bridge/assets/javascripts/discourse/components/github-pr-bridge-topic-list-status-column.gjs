@@ -30,7 +30,7 @@ export default class GithubPrBridgeTopicListStatusColumn extends Component {
       case "closed":
         return "circle-xmark";
       case "draft":
-        return "circle-half-stroke";
+        return "circle-dot";
       case "open":
         return "code-pull-request";
       default:
@@ -49,15 +49,15 @@ export default class GithubPrBridgeTopicListStatusColumn extends Component {
   get checksIcon() {
     switch (this.checksState) {
       case "success":
-        return "circle-check";
+        return "check";
       case "failure":
       case "timed_out":
       case "action_required":
-        return "triangle-exclamation";
+        return "xmark";
       case "pending":
       case "queued":
       case "in_progress":
-        return "clock";
+        return "circle-dot";
       case "cancelled":
       case "skipped":
       case "neutral":
@@ -78,13 +78,13 @@ export default class GithubPrBridgeTopicListStatusColumn extends Component {
   get reviewIcon() {
     switch (this.reviewState) {
       case "approved":
-        return "thumbs-up";
+        return "check";
       case "changes_requested":
-        return "triangle-exclamation";
+        return "xmark";
       case "commented":
         return "comment";
       case "review_required":
-        return "user-clock";
+        return "circle-dot";
       default:
         return "circle-question";
     }
@@ -97,34 +97,36 @@ export default class GithubPrBridgeTopicListStatusColumn extends Component {
   <template>
     <td class="github-pr-bridge-topic-list-statuses topic-list-data">
       {{#if this.status}}
-        <a
-          class="github-pr-bridge-topic-list-statuses__icon github-pr-bridge-topic-list-statuses__icon--merge"
-          data-pr-state={{this.prState}}
-          href={{this.status.github_pr_url}}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={{this.mergeLabel}}
-          aria-label={{this.mergeLabel}}
-        >
-          {{dIcon this.mergeIcon}}
-        </a>
+        <span class="github-pr-bridge-topic-list-statuses__group">
+          <a
+            class="github-pr-bridge-topic-list-statuses__icon github-pr-bridge-topic-list-statuses__icon--merge"
+            data-pr-state={{this.prState}}
+            href={{this.status.github_pr_url}}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={{this.mergeLabel}}
+            aria-label={{this.mergeLabel}}
+          >
+            {{dIcon this.mergeIcon}}
+          </a>
 
-        <span
-          class="github-pr-bridge-topic-list-statuses__icon github-pr-bridge-topic-list-statuses__icon--checks"
-          data-checks-state={{this.checksState}}
-          title={{this.checksLabel}}
-          aria-label={{this.checksLabel}}
-        >
-          {{dIcon this.checksIcon}}
-        </span>
+          <span
+            class="github-pr-bridge-topic-list-statuses__icon github-pr-bridge-topic-list-statuses__icon--checks"
+            data-checks-state={{this.checksState}}
+            title={{this.checksLabel}}
+            aria-label={{this.checksLabel}}
+          >
+            {{dIcon this.checksIcon}}
+          </span>
 
-        <span
-          class="github-pr-bridge-topic-list-statuses__icon github-pr-bridge-topic-list-statuses__icon--review"
-          data-review-state={{this.reviewState}}
-          title={{this.reviewLabel}}
-          aria-label={{this.reviewLabel}}
-        >
-          {{dIcon this.reviewIcon}}
+          <span
+            class="github-pr-bridge-topic-list-statuses__icon github-pr-bridge-topic-list-statuses__icon--review"
+            data-review-state={{this.reviewState}}
+            title={{this.reviewLabel}}
+            aria-label={{this.reviewLabel}}
+          >
+            {{dIcon this.reviewIcon}}
+          </span>
         </span>
       {{/if}}
     </td>

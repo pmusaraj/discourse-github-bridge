@@ -62,7 +62,8 @@
 }
 
 .github-pr-bridge-topic-list-statuses {
-  width: 7.5rem;
+  width: 6.75rem;
+  min-width: 6.75rem;
   text-align: center;
 }
 
@@ -76,12 +77,22 @@ td.github-pr-bridge-topic-list-statuses {
   white-space: nowrap;
 }
 
-.github-pr-bridge-topic-list-statuses__icon {
+.github-pr-bridge-topic-list-statuses__group {
   display: inline-flex;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
+  gap: 0.15rem;
+  white-space: nowrap;
+}
+
+.github-pr-bridge-topic-list-statuses__icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
   border-radius: 999px;
   color: var(--primary-medium);
   text-decoration: none;
@@ -91,10 +102,18 @@ td.github-pr-bridge-topic-list-statuses {
   font-size: var(--font-down-1);
 }
 
-.github-pr-bridge-topic-list-statuses__icon--merge[data-pr-state="merged"],
+.github-pr-bridge-topic-list-statuses__icon--merge[data-pr-state="open"],
 .github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="success"],
 .github-pr-bridge-topic-list-statuses__icon--review[data-review-state="approved"] {
-  color: var(--success);
+  color: #1a7f37;
+}
+
+.github-pr-bridge-topic-list-statuses__icon--merge[data-pr-state="merged"] {
+  color: #8250df;
+}
+
+.github-pr-bridge-topic-list-statuses__icon--merge[data-pr-state="draft"] {
+  color: #656d76;
 }
 
 .github-pr-bridge-topic-list-statuses__icon--merge[data-pr-state="closed"],
@@ -102,14 +121,19 @@ td.github-pr-bridge-topic-list-statuses {
 .github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="timed_out"],
 .github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="action_required"],
 .github-pr-bridge-topic-list-statuses__icon--review[data-review-state="changes_requested"] {
-  color: var(--danger);
+  color: #cf222e;
 }
 
-.github-pr-bridge-topic-list-statuses__icon--merge[data-pr-state="draft"],
 .github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="pending"],
 .github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="queued"],
-.github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="in_progress"],
+.github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="in_progress"] {
+  color: #9a6700;
+}
+
+.github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="cancelled"],
+.github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="skipped"],
+.github-pr-bridge-topic-list-statuses__icon--checks[data-checks-state="neutral"],
 .github-pr-bridge-topic-list-statuses__icon--review[data-review-state="commented"],
 .github-pr-bridge-topic-list-statuses__icon--review[data-review-state="review_required"] {
-  color: var(--primary-medium);
+  color: #656d76;
 }
