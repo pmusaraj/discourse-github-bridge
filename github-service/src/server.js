@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { normalizeGitHubWebhook } from "./normalize.js";
 import { signDiscourseRequest } from "./signature.js";
@@ -15,11 +15,18 @@ const GITHUB_APP_TOKEN_CACHE_SKEW_MS = 5 * 60 * 1000;
 export function createServer({ config, fetchImpl = fetch } = {}) {
   const resolvedConfig = readConfig(config);
   const processedDiscourseEventStore = createProcessedDiscourseEventStore(resolvedConfig.processedEventsPath);
+  const githubAppInstallationStore = new GitHubAppInstallationStore(resolvedConfig);
 
   return http.createServer(async (request, response) => {
     try {
       if (request.method === "GET" && request.url === "/health") {
         return sendJson(response, 200, { ok: true });
+      }
+
+      if (request.method === "GET" && request.url === "/github/app/installations") {
+        return sendJson(response, 200, {
+          repositories: await githubAppInstallationStore.repositories()
+        });
       }
 
       if (request.method === "POST" && request.url === "/discourse/events") {
@@ -52,10 +59,20 @@ export function createServer({ config, fetchImpl = fetch } = {}) {
         return sendJson(response, 400, { error: "invalid json" });
       }
 
+      const eventName = request.headers["x-github-event"];
+      if (["installation", "installation_repositories"].includes(eventName)) {
+        const result = await handleGitHubAppInstallationEvent({
+          eventName,
+          payload,
+          githubAppInstallationStore
+        });
+        return sendJson(response, 200, result);
+      }
+
       let normalized;
       try {
         normalized = normalizeGitHubWebhook({
-          eventName: request.headers["x-github-event"],
+          eventName,
           deliveryId: request.headers["x-github-delivery"],
           payload
         });
@@ -153,6 +170,140 @@ export async function forwardToDiscourse({ event, config, fetchImpl = fetch }) {
 
 export function discourseEventsUrl(baseUrl) {
   return new URL("/github-pr-bridge/events.json", baseUrl).toString();
+}
+
+async function handleGitHubAppInstallationEvent({ eventName, payload, githubAppInstallationStore }) {
+  const installationId = payload.installation?.id;
+  if (!installationId) {
+    return { ok: false, error: "missing installation id" };
+  }
+
+  if (eventName === "installation") {
+    if (payload.action === "deleted") {
+      const removed = await githubAppInstallationStore.removeInstallationRepositories({
+        installationId,
+        repositories: repositoriesFromPayload(payload.repositories)
+      });
+      return { ok: true, action: "removed_installation_repositories", installation_id: installationId, repositories: removed };
+    }
+
+    const upserted = await githubAppInstallationStore.upsertRepositories({
+      installationId,
+      repositories: repositoriesFromPayload(payload.repositories)
+    });
+    return { ok: true, action: "upserted_installation_repositories", installation_id: installationId, repositories: upserted };
+  }
+
+  const removed = await githubAppInstallationStore.removeRepositories(repositoriesFromPayload(payload.repositories_removed));
+  const upserted = await githubAppInstallationStore.upsertRepositories({
+    installationId,
+    repositories: repositoriesFromPayload(payload.repositories_added)
+  });
+
+  return {
+    ok: true,
+    action: "updated_installation_repositories",
+    installation_id: installationId,
+    repositories_added: upserted,
+    repositories_removed: removed
+  };
+}
+
+function repositoriesFromPayload(repositories = []) {
+  return repositories.map((repository) => repository.full_name).filter(Boolean);
+}
+
+class GitHubAppInstallationStore {
+  constructor(config) {
+    this.config = config;
+  }
+
+  async repositories() {
+    return await this.load();
+  }
+
+  async upsertRepositories({ installationId, repositories }) {
+    if (!repositories.length) {
+      return [];
+    }
+
+    const data = await this.load();
+    for (const repo of repositories) {
+      data[repo.toLowerCase()] = installationId;
+    }
+    await this.save(data);
+    return repositories;
+  }
+
+  async removeRepositories(repositories) {
+    if (!repositories.length) {
+      return [];
+    }
+
+    const data = await this.load();
+    for (const repo of repositories) {
+      delete data[repo.toLowerCase()];
+    }
+    await this.save(data);
+    return repositories;
+  }
+
+  async removeInstallationRepositories({ installationId, repositories }) {
+    const data = await this.load();
+    const explicitRepositories = repositories.map((repo) => repo.toLowerCase());
+    const repositoriesToRemove = explicitRepositories.length ? explicitRepositories : Object.entries(data)
+      .filter(([, storedInstallationId]) => String(storedInstallationId) === String(installationId))
+      .map(([repo]) => repo);
+
+    for (const repo of repositoriesToRemove) {
+      delete data[repo];
+    }
+    await this.save(data);
+    return repositoriesToRemove;
+  }
+
+  async load() {
+    if (this.config.githubAppInstallationsCache) {
+      return this.config.githubAppInstallationsCache;
+    }
+
+    if (this.config.githubAppInstallations) {
+      this.config.githubAppInstallationsCache = normalizeInstallationMap(this.config.githubAppInstallations);
+      return this.config.githubAppInstallationsCache;
+    }
+
+    if (!this.config.githubAppInstallationsPath) {
+      this.config.githubAppInstallationsCache = {};
+      return this.config.githubAppInstallationsCache;
+    }
+
+    try {
+      const data = JSON.parse(await readFile(this.config.githubAppInstallationsPath, "utf8"));
+      this.config.githubAppInstallationsCache = normalizeInstallationMap(data);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      this.config.githubAppInstallationsCache = {};
+    }
+
+    return this.config.githubAppInstallationsCache;
+  }
+
+  async save(data) {
+    if (!this.config.githubAppInstallationsPath) {
+      this.config.githubAppInstallations = data;
+      this.config.githubAppInstallationsCache = data;
+      return;
+    }
+
+    await mkdir(dirname(this.config.githubAppInstallationsPath), { recursive: true });
+    await writeFile(
+      this.config.githubAppInstallationsPath,
+      `${JSON.stringify({ repositories: data }, null, 2)}\n`
+    );
+    this.config.githubAppInstallationsCache = data;
+  }
 }
 
 async function handleDiscourseEvent({

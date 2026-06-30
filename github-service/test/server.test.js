@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -359,6 +359,148 @@ test("ignores unsupported GitHub events without forwarding", async () => {
     assert.equal(response.status, 202);
     assert.equal((await response.json()).ignored, true);
     assert.equal(forwarded, false);
+  });
+});
+
+test("captures GitHub App installation repository mappings from webhooks", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "github-pr-bridge-installations-"));
+  const installationsPath = join(tempDir, "installations.json");
+  const installConfig = { ...config, githubAppInstallationsPath: installationsPath };
+  let forwarded = false;
+  const server = createServer({
+    config: installConfig,
+    fetchImpl: async () => {
+      forwarded = true;
+      return jsonResponse({ ok: true }, 200);
+    }
+  });
+
+  try {
+    await withListeningServer(server, async (baseUrl) => {
+      const body = JSON.stringify({
+        action: "created",
+        installation: { id: 98765 },
+        repositories: [{ full_name: "Discourse/Discourse" }, { full_name: "discourse/discourse-ai" }]
+      });
+      const response = await fetch(`${baseUrl}/github/webhook`, {
+        method: "POST",
+        headers: githubHeaders({ body, eventName: "installation", deliveryId: "delivery-installation" }),
+        body
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        action: "upserted_installation_repositories",
+        installation_id: 98765,
+        repositories: ["Discourse/Discourse", "discourse/discourse-ai"]
+      });
+      assert.equal(forwarded, false);
+      assert.deepEqual(JSON.parse(await readInstallationsFile(installationsPath)), {
+        repositories: {
+          "discourse/discourse": 98765,
+          "discourse/discourse-ai": 98765
+        }
+      });
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("captures GitHub App repository add and remove webhooks", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "github-pr-bridge-installations-"));
+  const installationsPath = join(tempDir, "installations.json");
+  await writeFile(installationsPath, JSON.stringify({ repositories: { "discourse/discourse": 98765 } }));
+  const server = createServer({
+    config: { ...config, githubAppInstallationsPath: installationsPath },
+    fetchImpl: async () => jsonResponse({ ok: true }, 200)
+  });
+
+  try {
+    await withListeningServer(server, async (baseUrl) => {
+      const body = JSON.stringify({
+        action: "added",
+        installation: { id: 98765 },
+        repositories_added: [{ full_name: "discourse/discourse-ai" }],
+        repositories_removed: [{ full_name: "discourse/discourse" }]
+      });
+      const response = await fetch(`${baseUrl}/github/webhook`, {
+        method: "POST",
+        headers: githubHeaders({ body, eventName: "installation_repositories", deliveryId: "delivery-installation-repos" }),
+        body
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        action: "updated_installation_repositories",
+        installation_id: 98765,
+        repositories_added: ["discourse/discourse-ai"],
+        repositories_removed: ["discourse/discourse"]
+      });
+      assert.deepEqual(JSON.parse(await readInstallationsFile(installationsPath)), {
+        repositories: { "discourse/discourse-ai": 98765 }
+      });
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("removes all repositories for deleted GitHub App installations", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "github-pr-bridge-installations-"));
+  const installationsPath = join(tempDir, "installations.json");
+  await writeFile(installationsPath, JSON.stringify({
+    repositories: {
+      "discourse/discourse": 98765,
+      "discourse/discourse-ai": 98765,
+      "other/repo": 22222
+    }
+  }));
+  const server = createServer({
+    config: { ...config, githubAppInstallationsPath: installationsPath },
+    fetchImpl: async () => jsonResponse({ ok: true }, 200)
+  });
+
+  try {
+    await withListeningServer(server, async (baseUrl) => {
+      const body = JSON.stringify({ action: "deleted", installation: { id: 98765 } });
+      const response = await fetch(`${baseUrl}/github/webhook`, {
+        method: "POST",
+        headers: githubHeaders({ body, eventName: "installation", deliveryId: "delivery-installation-deleted" }),
+        body
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        action: "removed_installation_repositories",
+        installation_id: 98765,
+        repositories: ["discourse/discourse", "discourse/discourse-ai"]
+      });
+      assert.deepEqual(JSON.parse(await readInstallationsFile(installationsPath)), {
+        repositories: { "other/repo": 22222 }
+      });
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("exposes captured GitHub App installation mappings", async () => {
+  const server = createServer({
+    config: { ...config, githubAppInstallations: { "Discourse/Discourse": 98765 } },
+    fetchImpl: async () => jsonResponse({ ok: true }, 200)
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/github/app/installations`);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      repositories: { "discourse/discourse": 98765 }
+    });
   });
 });
 
@@ -823,6 +965,10 @@ function discoursePostPayload() {
     post_url: "https://forum.example.com/t/topic/2/2",
     raw: "Discourse reply"
   };
+}
+
+async function readInstallationsFile(path) {
+  return await readFile(path, "utf8");
 }
 
 function jsonResponse(body, status) {

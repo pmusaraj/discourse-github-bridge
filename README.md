@@ -62,7 +62,9 @@ multi-repository use should move to a GitHub App:
 The service exposes:
 
 - `GET /health`
-- `POST /github/webhook` for GitHub-originated webhooks
+- `GET /github/app/installations` to inspect captured GitHub App repository mappings
+- `POST /github/webhook` for GitHub-originated webhooks, including GitHub App
+  `installation` and `installation_repositories` events
 - `POST /discourse/events` for signed Discourse-originated events that should call GitHub
 
 Required environment variables:
@@ -73,8 +75,9 @@ Required environment variables:
 - `GITHUB_APP_ID`: optional GitHub App ID used when `GITHUB_TOKEN` is not set.
 - `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_PATH`: optional GitHub App private key.
   `GITHUB_APP_PRIVATE_KEY` may contain escaped `\n` sequences.
-- `GITHUB_APP_INSTALLATIONS_PATH`: optional JSON file mapping repositories to GitHub App
-  installation IDs, for example `{ "repositories": { "owner/repo": 12345 } }`.
+- `GITHUB_APP_INSTALLATIONS_PATH`: optional JSON file populated from GitHub App
+  `installation` and `installation_repositories` webhooks. It maps repositories to
+  GitHub App installation IDs, for example `{ "repositories": { "owner/repo": 12345 } }`.
   Repository keys are case-insensitive.
 - `DISCOURSE_BASE_URL`: Base URL for the Discourse site, for example `https://forum.example.com`.
 - `DISCOURSE_SHARED_SECRET`: Shared secret that matches the Discourse `github_pr_bridge_shared_secret` site setting.
