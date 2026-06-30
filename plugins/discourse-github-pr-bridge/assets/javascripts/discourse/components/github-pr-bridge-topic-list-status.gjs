@@ -9,7 +9,6 @@ export default class GithubPrBridgeTopicListStatus extends Component {
   get prLabel() {
     return i18n("github_pr_bridge.topic_list.pr_label", {
       number: this.status.github_pr_number,
-      state: this.prStateLabel,
     });
   }
 
@@ -62,24 +61,6 @@ export default class GithubPrBridgeTopicListStatus extends Component {
         >
           {{this.prLabel}}
         </a>
-
-        {{#if this.checksLabel}}
-          <span
-            class="github-pr-bridge-topic-list-status__badge github-pr-bridge-topic-list-status__badge--checks"
-            data-checks-state={{this.checksState}}
-          >
-            {{this.checksLabel}}
-          </span>
-        {{/if}}
-
-        {{#if this.reviewLabel}}
-          <span
-            class="github-pr-bridge-topic-list-status__badge github-pr-bridge-topic-list-status__badge--review"
-            data-review-state={{this.reviewState}}
-          >
-            {{this.reviewLabel}}
-          </span>
-        {{/if}}
 
         {{#if this.status.github_pr_recent_activity_summary}}
           <span class="github-pr-bridge-topic-list-status__activity">

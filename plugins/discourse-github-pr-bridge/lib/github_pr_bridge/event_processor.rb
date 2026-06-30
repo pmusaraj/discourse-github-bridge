@@ -117,23 +117,26 @@ module GithubPrBridge
           github_pr_recent_activity_at: event_activity_time(pr),
           github_pr_recent_activity_summary: "PR updated"
         )
+        sync_topic_closed_state(mapping.topic, new_state)
         { topic_id: mapping.topic_id, action: "updated_topic" }
       else
         topic = create_topic(pr, repo_full_name)
         sync_topic_labels(topic, pr)
-        PrTopicMapping.create!(
-          github_repo: repo_full_name,
-          github_pr_number: number,
-          github_pr_node_id: pr["node_id"],
-          github_pr_url: pr["html_url"],
-          github_pr_head_sha: pr.dig("head", "sha"),
-          github_pr_state: pr_state(pr),
-          github_pr_draft: pr["draft"] || false,
-          github_pr_merged: pr["merged"] || false,
-          github_pr_recent_activity_at: event_activity_time(pr),
-          github_pr_recent_activity_summary: "PR opened",
-          topic: topic
-        )
+        mapping =
+          PrTopicMapping.create!(
+            github_repo: repo_full_name,
+            github_pr_number: number,
+            github_pr_node_id: pr["node_id"],
+            github_pr_url: pr["html_url"],
+            github_pr_head_sha: pr.dig("head", "sha"),
+            github_pr_state: pr_state(pr),
+            github_pr_draft: pr["draft"] || false,
+            github_pr_merged: pr["merged"] || false,
+            github_pr_recent_activity_at: event_activity_time(pr),
+            github_pr_recent_activity_summary: "PR opened",
+            topic: topic
+          )
+        sync_topic_closed_state(topic, mapping.github_pr_state)
         { topic_id: topic.id, action: "created_topic" }
       end
     end
@@ -513,6 +516,13 @@ module GithubPrBridge
         post_type: Post.types[:small_action],
         action_code: STATUS_ACTION_CODE
       )
+    end
+
+    def sync_topic_closed_state(topic, pr_state)
+      should_close = pr_state.in?(%w[closed merged])
+      return if topic.closed? == should_close
+
+      TopicStatusUpdater.new(topic, system_user).update!("closed", should_close)
     end
 
     def sync_topic_labels(topic, pr)

@@ -79,11 +79,69 @@ RSpec.describe GithubPrBridge::EventProcessor do
       )
 
     topic = Topic.find(result[:topic_id])
-    small_action = topic.posts.where(post_type: Post.types[:small_action]).last
+    small_action =
+      topic
+        .posts
+        .where(
+          post_type: Post.types[:small_action],
+          action_code: "github_pr_bridge_status_changed"
+        )
+        .last
     expect(small_action.raw).to eq(
       "GitHub PR status changed from open to closed."
     )
     expect(small_action.action_code).to eq("github_pr_bridge_status_changed")
+  end
+
+  it "closes and reopens topics when PRs close and reopen" do
+    created =
+      described_class.call(
+        pull_request_payload(event_id: "delivery-1", title: "Add feature")
+      )
+    topic = Topic.find(created[:topic_id])
+    expect(topic.closed?).to eq(false)
+
+    described_class.call(
+      pull_request_payload(
+        event_id: "delivery-2",
+        title: "Add feature",
+        pr_attrs: {
+          "state" => "closed"
+        }
+      )
+    )
+    expect(topic.reload.closed?).to eq(true)
+
+    described_class.call(
+      pull_request_payload(
+        event_id: "delivery-3",
+        title: "Add feature",
+        pr_attrs: {
+          "state" => "open"
+        }
+      )
+    )
+    expect(topic.reload.closed?).to eq(false)
+  end
+
+  it "closes topics created from merged PR payloads" do
+    result =
+      described_class.call(
+        pull_request_payload(
+          event_id: "delivery-merged",
+          title: "Add feature",
+          pr_attrs: {
+            "state" => "closed",
+            "merged" => true
+          }
+        )
+      )
+
+    topic = Topic.find(result[:topic_id])
+    mapping = GithubPrBridge::PrTopicMapping.find_by(github_pr_number: 123)
+    expect(topic.closed?).to eq(true)
+    expect(mapping.github_pr_state).to eq("merged")
+    expect(mapping.github_pr_merged).to eq(true)
   end
 
   it "records GitHub check run state as small action posts" do

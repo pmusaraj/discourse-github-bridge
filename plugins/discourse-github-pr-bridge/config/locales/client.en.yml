@@ -2,13 +2,20 @@ en:
   js:
     github_pr_bridge:
       topic_list:
-        pr_label: "PR #%{number} %{state}"
+        status_column_label: "PR status"
+        pr_label: "PR #%{number}"
         pr_states:
           open: "open"
           closed: "closed"
           merged: "merged"
           draft: "draft"
           unknown: "unknown"
+        merge_states:
+          open: "PR open"
+          closed: "PR closed"
+          merged: "PR merged"
+          draft: "Draft PR"
+          unknown: "PR state unknown"
         check_states:
           pending: "checks pending"
           queued: "checks pending"

@@ -108,6 +108,11 @@ fixtures.each do |fixture|
 
   DiscourseTagging.tag_topic_by_names(topic, actor.guardian, fixture.fetch(:labels))
 
+  should_close = fixture.fetch(:state) == "closed" || fixture.fetch(:merged)
+  if topic.closed? != should_close
+    TopicStatusUpdater.new(topic, actor).update!("closed", should_close)
+  end
+
   GithubPrBridge::PrTopicMapping.find_or_initialize_by(
     github_repo: repo,
     github_pr_number: fixture.fetch(:number)
