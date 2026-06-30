@@ -103,8 +103,7 @@ fixtures.each do |fixture|
   else
     topic.update!(category: category)
     first_post = topic.first_post
-    first_post&.update!(raw: raw, cooked: nil)
-    first_post&.rebake!
+    first_post&.update!(raw: raw, cooked: PrettyText.cook(raw))
   end
 
   DiscourseTagging.tag_topic_by_names(topic, actor.guardian, fixture.fetch(:labels))
