@@ -68,7 +68,14 @@ The service exposes:
 Required environment variables:
 
 - `GITHUB_WEBHOOK_SECRET`: GitHub webhook secret used to verify `X-Hub-Signature-256`.
-- `GITHUB_TOKEN`: GitHub token used to create PR issue comments for Discourse replies.
+- `GITHUB_TOKEN`: optional GitHub token used to create PR issue comments for Discourse replies.
+  If omitted, configure GitHub App credentials below.
+- `GITHUB_APP_ID`: optional GitHub App ID used when `GITHUB_TOKEN` is not set.
+- `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_PATH`: optional GitHub App private key.
+  `GITHUB_APP_PRIVATE_KEY` may contain escaped `\n` sequences.
+- `GITHUB_APP_INSTALLATIONS_PATH`: optional JSON file mapping repositories to GitHub App
+  installation IDs, for example `{ "repositories": { "owner/repo": 12345 } }`.
+  Repository keys are case-insensitive.
 - `DISCOURSE_BASE_URL`: Base URL for the Discourse site, for example `https://forum.example.com`.
 - `DISCOURSE_SHARED_SECRET`: Shared secret that matches the Discourse `github_pr_bridge_shared_secret` site setting.
 - `PORT`: optional, defaults to `3000`.

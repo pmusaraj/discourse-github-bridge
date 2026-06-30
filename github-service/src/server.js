@@ -9,6 +9,8 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const DEFAULT_RETRY_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+const GITHUB_API_BASE_URL = "https://api.github.com";
+const GITHUB_APP_TOKEN_CACHE_SKEW_MS = 5 * 60 * 1000;
 
 export function createServer({ config, fetchImpl = fetch } = {}) {
   const resolvedConfig = readConfig(config);
@@ -224,15 +226,17 @@ function validateDiscoursePostPayload(payload) {
 }
 
 export async function createGitHubIssueComment({ payload, config, fetchImpl = fetch }) {
-  if (!config.githubToken) {
-    throw new Error("githubToken is required");
-  }
+  const authorization = await resolveGitHubAuthorizationHeader({
+    repo: payload.github_repo,
+    config,
+    fetchImpl
+  });
 
   const response = await fetchImpl(githubIssueCommentsUrl({ repo: payload.github_repo, issueNumber: payload.github_pr_number }), {
     method: "POST",
     headers: {
       "accept": "application/vnd.github+json",
-      "authorization": `Bearer ${config.githubToken}`,
+      "authorization": authorization,
       "content-type": "application/json",
       "user-agent": "discourse-github-pr-bridge"
     },
@@ -250,7 +254,130 @@ export async function createGitHubIssueComment({ payload, config, fetchImpl = fe
 }
 
 export function githubIssueCommentsUrl({ repo, issueNumber }) {
-  return new URL(`/repos/${repo}/issues/${issueNumber}/comments`, "https://api.github.com").toString();
+  return new URL(`/repos/${repo}/issues/${issueNumber}/comments`, GITHUB_API_BASE_URL).toString();
+}
+
+export function githubAppInstallationTokenUrl({ installationId }) {
+  return new URL(`/app/installations/${installationId}/access_tokens`, GITHUB_API_BASE_URL).toString();
+}
+
+export async function resolveGitHubAuthorizationHeader({ repo, config, fetchImpl = fetch }) {
+  if (config.githubToken) {
+    return `Bearer ${config.githubToken}`;
+  }
+
+  const token = await createGitHubInstallationAccessToken({ repo, config, fetchImpl });
+  return `Bearer ${token}`;
+}
+
+export async function createGitHubInstallationAccessToken({ repo, config, fetchImpl = fetch }) {
+  const installationId = await githubAppInstallationIdForRepo({ repo, config });
+  if (!installationId) {
+    throw new Error(`missing GitHub App installation for ${repo}`);
+  }
+
+  const cacheKey = String(installationId);
+  const cached = config.githubAppTokenCache?.get(cacheKey);
+  if (cached && cached.expiresAtMs - GITHUB_APP_TOKEN_CACHE_SKEW_MS > Date.now()) {
+    return cached.token;
+  }
+
+  const jwt = await createGitHubAppJwt(config);
+  const response = await fetchImpl(githubAppInstallationTokenUrl({ installationId }), {
+    method: "POST",
+    headers: {
+      "accept": "application/vnd.github+json",
+      "authorization": `Bearer ${jwt}`,
+      "content-type": "application/json",
+      "user-agent": "discourse-github-pr-bridge"
+    },
+    body: JSON.stringify({ repositories: [repo.split("/")[1]] })
+  });
+  const responseBody = await parseResponseBody(response);
+
+  if (!response.ok) {
+    const message = typeof responseBody === "string" ? responseBody : responseBody?.message;
+    throw new Error(`GitHub App installation token request failed: ${response.status}${message ? ` ${message}` : ""}`);
+  }
+  if (!responseBody?.token) {
+    throw new Error("GitHub App installation token response missing token");
+  }
+
+  const expiresAtMs = responseBody.expires_at ? Date.parse(responseBody.expires_at) : Date.now() + 50 * 60 * 1000;
+  config.githubAppTokenCache?.set(cacheKey, { token: responseBody.token, expiresAtMs });
+  return responseBody.token;
+}
+
+export async function githubAppInstallationIdForRepo({ repo, config }) {
+  const installations = await githubAppInstallations(config);
+  return installations[repo.toLowerCase()];
+}
+
+async function githubAppInstallations(config) {
+  if (config.githubAppInstallations) {
+    return normalizeInstallationMap(config.githubAppInstallations);
+  }
+
+  if (!config.githubAppInstallationsPath) {
+    return {};
+  }
+
+  if (config.githubAppInstallationsCache) {
+    return config.githubAppInstallationsCache;
+  }
+
+  const data = JSON.parse(await readFile(config.githubAppInstallationsPath, "utf8"));
+  config.githubAppInstallationsCache = normalizeInstallationMap(data);
+  return config.githubAppInstallationsCache;
+}
+
+function normalizeInstallationMap(data) {
+  const source = data.repositories ?? data;
+  return Object.fromEntries(
+    Object.entries(source).map(([repo, installationId]) => [repo.toLowerCase(), installationId])
+  );
+}
+
+export async function createGitHubAppJwt(config) {
+  if (!config.githubAppId) {
+    throw new Error("githubToken or GitHub App credentials are required");
+  }
+
+  const privateKey = await githubAppPrivateKey(config);
+  if (!privateKey) {
+    throw new Error("githubToken or GitHub App credentials are required");
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: "RS256", typ: "JWT" };
+  const payload = {
+    iat: now - 60,
+    exp: now + 9 * 60,
+    iss: String(config.githubAppId)
+  };
+  const signingInput = `${base64urlJson(header)}.${base64urlJson(payload)}`;
+  const signature = crypto.sign("RSA-SHA256", Buffer.from(signingInput), privateKey).toString("base64url");
+  return `${signingInput}.${signature}`;
+}
+
+async function githubAppPrivateKey(config) {
+  if (config.githubAppPrivateKey) {
+    return normalizePrivateKey(config.githubAppPrivateKey);
+  }
+
+  if (config.githubAppPrivateKeyPath) {
+    return normalizePrivateKey(await readFile(config.githubAppPrivateKeyPath, "utf8"));
+  }
+
+  return null;
+}
+
+function normalizePrivateKey(privateKey) {
+  return privateKey.replace(/\\n/g, "\n");
+}
+
+function base64urlJson(value) {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
 async function parseResponseBody(response) {
@@ -478,6 +605,12 @@ function readConfig(config = {}) {
   const resolved = {
     githubWebhookSecret: config.githubWebhookSecret ?? process.env.GITHUB_WEBHOOK_SECRET,
     githubToken: config.githubToken ?? process.env.GITHUB_TOKEN,
+    githubAppId: config.githubAppId ?? process.env.GITHUB_APP_ID,
+    githubAppPrivateKey: config.githubAppPrivateKey ?? process.env.GITHUB_APP_PRIVATE_KEY,
+    githubAppPrivateKeyPath: config.githubAppPrivateKeyPath ?? process.env.GITHUB_APP_PRIVATE_KEY_PATH,
+    githubAppInstallations: config.githubAppInstallations,
+    githubAppInstallationsPath: config.githubAppInstallationsPath ?? process.env.GITHUB_APP_INSTALLATIONS_PATH,
+    githubAppTokenCache: config.githubAppTokenCache ?? new Map(),
     discourseBaseUrl: config.discourseBaseUrl ?? process.env.DISCOURSE_BASE_URL,
     discourseSharedSecret: config.discourseSharedSecret ?? process.env.DISCOURSE_SHARED_SECRET,
     processedEventsPath: config.processedEventsPath ?? process.env.PROCESSED_EVENTS_PATH,
@@ -487,7 +620,7 @@ function readConfig(config = {}) {
   };
 
   for (const [key, value] of Object.entries(resolved)) {
-    if (!["githubToken", "processedEventsPath", "retryAttempts", "retryDelayMs", "logger"].includes(key) && !value) {
+    if (!["githubToken", "githubAppId", "githubAppPrivateKey", "githubAppPrivateKeyPath", "githubAppInstallations", "githubAppInstallationsPath", "githubAppTokenCache", "processedEventsPath", "retryAttempts", "retryDelayMs", "logger"].includes(key) && !value) {
       throw new Error(`${key} is required`);
     }
   }

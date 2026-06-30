@@ -1,14 +1,17 @@
 import crypto from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  createGitHubAppJwt,
   createGitHubIssueComment,
   createServer,
   discourseEventsUrl,
   forwardToDiscourse,
+  githubAppInstallationIdForRepo,
+  githubAppInstallationTokenUrl,
   githubIssueCommentsUrl,
   verifyGitHubSignature
 } from "../src/server.js";
@@ -456,6 +459,114 @@ test("creates GitHub issue comments for signed Discourse events", async () => {
     assert.deepEqual(await duplicateResponse.json(), { ok: true, duplicate: true });
     assert.equal(forwardedRequests.length, 1);
   });
+});
+
+test("creates GitHub issue comments with GitHub App installation tokens", async () => {
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const appConfig = {
+    ...config,
+    githubToken: "",
+    githubAppId: "12345",
+    githubAppPrivateKey: privateKey.export({ type: "pkcs1", format: "pem" }),
+    githubAppInstallations: { "discourse/discourse": 98765 },
+    githubAppTokenCache: new Map()
+  };
+  const forwardedRequests = [];
+
+  const result = await createGitHubIssueComment({
+    payload: discoursePostPayload(),
+    config: appConfig,
+    fetchImpl: async (url, options) => {
+      forwardedRequests.push({ url, options });
+      if (url === githubAppInstallationTokenUrl({ installationId: 98765 })) {
+        return jsonResponse({ token: "installation-token", expires_at: new Date(Date.now() + 3600_000).toISOString() }, 201);
+      }
+
+      return jsonResponse({ id: 456 }, 201);
+    }
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    status: 201,
+    github_comment_id: 456,
+    github: { id: 456 }
+  });
+  assert.equal(forwardedRequests.length, 2);
+  assert.equal(forwardedRequests[0].url, githubAppInstallationTokenUrl({ installationId: 98765 }));
+  assert.match(forwardedRequests[0].options.headers.authorization, /^Bearer [^.]+\.[^.]+\.[^.]+$/);
+  assert.equal(forwardedRequests[1].url, githubIssueCommentsUrl({ repo: "discourse/discourse", issueNumber: 123 }));
+  assert.equal(forwardedRequests[1].options.headers.authorization, "Bearer installation-token");
+});
+
+test("caches GitHub App installation tokens between comment creations", async () => {
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const appConfig = {
+    ...config,
+    githubToken: "",
+    githubAppId: "12345",
+    githubAppPrivateKey: privateKey.export({ type: "pkcs1", format: "pem" }),
+    githubAppInstallations: { "discourse/discourse": 98765 },
+    githubAppTokenCache: new Map()
+  };
+  let tokenRequests = 0;
+
+  for (let i = 0; i < 2; i += 1) {
+    await createGitHubIssueComment({
+      payload: { ...discoursePostPayload(), event_id: `discourse-post-${i}` },
+      config: appConfig,
+      fetchImpl: async (url) => {
+        if (url === githubAppInstallationTokenUrl({ installationId: 98765 })) {
+          tokenRequests += 1;
+          return jsonResponse({ token: "installation-token", expires_at: new Date(Date.now() + 3600_000).toISOString() }, 201);
+        }
+
+        return jsonResponse({ id: 456 }, 201);
+      }
+    });
+  }
+
+  assert.equal(tokenRequests, 1);
+});
+
+test("loads GitHub App installation IDs from durable JSON storage", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "github-pr-bridge-installations-"));
+  const installationsPath = join(tempDir, "installations.json");
+
+  try {
+    await writeFile(installationsPath, JSON.stringify({ repositories: { "Discourse/Discourse": 98765 } }));
+    assert.equal(
+      await githubAppInstallationIdForRepo({
+        repo: "discourse/discourse",
+        config: { githubAppInstallationsPath: installationsPath }
+      }),
+      98765
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("creates RS256 GitHub App JWTs", async () => {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwt = await createGitHubAppJwt({
+    githubAppId: "12345",
+    githubAppPrivateKey: privateKey.export({ type: "pkcs1", format: "pem" })
+  });
+  const [encodedHeader, encodedPayload, encodedSignature] = jwt.split(".");
+  const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+
+  assert.equal(JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8")).alg, "RS256");
+  assert.equal(payload.iss, "12345");
+  assert.equal(
+    crypto.verify(
+      "RSA-SHA256",
+      Buffer.from(`${encodedHeader}.${encodedPayload}`),
+      publicKey,
+      Buffer.from(encodedSignature, "base64url")
+    ),
+    true
+  );
 });
 
 test("deduplicates signed Discourse events across service restarts", async () => {
