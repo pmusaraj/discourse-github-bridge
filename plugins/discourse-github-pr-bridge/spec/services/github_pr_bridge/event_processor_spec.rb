@@ -178,6 +178,31 @@ RSpec.describe GithubPrBridge::EventProcessor do
     expect(mapping.github_pr_head_sha).to eq("abc123")
   end
 
+  it "records GitHub commit status changes as small action posts" do
+    created_topic =
+      described_class.call(
+        pull_request_payload(event_id: "delivery-1", title: "Add feature")
+      )
+
+    result = described_class.call(status_payload)
+
+    expect(result[:action]).to eq("created_commit_status_actions")
+    expect(result[:topic_count]).to eq(1)
+
+    topic = Topic.find(created_topic[:topic_id])
+    small_action = topic.posts.where(post_type: Post.types[:small_action]).last
+    expect(small_action.raw).to eq(
+      "GitHub status \"ci/build\" failure. Build failed https://ci.example.com/build/1"
+    )
+    expect(small_action.action_code).to eq(
+      "github_pr_bridge_commit_status_changed"
+    )
+
+    mapping = GithubPrBridge::PrTopicMapping.find_by(github_pr_number: 123)
+    expect(mapping.github_pr_checks_state).to eq("failure")
+    expect(mapping.github_pr_recent_activity_summary).to eq("checks failure")
+  end
+
   it "syncs GitHub labels to Discourse tags while preserving local tags" do
     described_class.call(
       pull_request_payload(
@@ -352,6 +377,24 @@ RSpec.describe GithubPrBridge::EventProcessor do
         "user" => {
           "login" => "reviewer"
         }
+      }
+    }
+  end
+
+  def status_payload
+    {
+      "event_id" => "delivery-status-1",
+      "event_type" => "status",
+      "repository" => {
+        "full_name" => "discourse/discourse"
+      },
+      "status" => {
+        "sha" => "abc123",
+        "state" => "error",
+        "context" => "ci/build",
+        "description" => "Build failed",
+        "target_url" => "https://ci.example.com/build/1",
+        "created_at" => "2026-06-29T13:15:00Z"
       }
     }
   end

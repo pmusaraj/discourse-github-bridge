@@ -10,6 +10,7 @@ module GithubPrBridge
       pull_request_review
       issue_comment
       push
+      status
       check_run
       check_suite
     ].freeze
@@ -18,6 +19,7 @@ module GithubPrBridge
     CHECK_ACTION_CODE = "github_pr_bridge_check_changed"
     REVIEW_ACTION_CODE = "github_pr_bridge_review_changed"
     PUSH_ACTION_CODE = "github_pr_bridge_push_changed"
+    COMMIT_STATUS_ACTION_CODE = "github_pr_bridge_commit_status_changed"
 
     def self.call(payload)
       new(payload).call
@@ -68,6 +70,8 @@ module GithubPrBridge
         process_issue_comment
       when "push"
         process_push
+      when "status"
+        process_commit_status
       when "check_run", "check_suite"
         process_check_event
       end
@@ -285,6 +289,41 @@ module GithubPrBridge
       { action: "created_push_actions", topic_count: mappings.count }
     end
 
+    def process_commit_status
+      status =
+        payload.fetch("status") { raise InvalidPayload, "missing status" }
+      repo_full_name =
+        payload.dig("repository", "full_name") ||
+          status.dig("repository", "full_name") ||
+          raise(InvalidPayload, "missing repository full_name")
+      sha = status["sha"].presence
+      raise InvalidPayload, "missing status sha" if sha.blank?
+
+      mappings =
+        PrTopicMapping.where(
+          github_repo: repo_full_name,
+          github_pr_head_sha: sha
+        ).to_a
+      return { action: "skipped_unmapped_status" } if mappings.blank?
+
+      mappings.each do |mapping|
+        mapping.topic.add_moderator_post(
+          system_user,
+          commit_status_action_message(status),
+          post_type: Post.types[:small_action],
+          action_code: COMMIT_STATUS_ACTION_CODE
+        )
+        mapping.update!(
+          github_pr_checks_state: commit_status_state(status),
+          github_pr_recent_activity_at: event_activity_time(status),
+          github_pr_recent_activity_summary:
+            commit_status_activity_summary(status)
+        )
+      end
+
+      { action: "created_commit_status_actions", topic_count: mappings.count }
+    end
+
     def process_check_event
       repo_full_name =
         payload.dig("repository", "full_name") ||
@@ -313,6 +352,33 @@ module GithubPrBridge
       )
 
       { topic_id: mapping.topic_id, action: "created_check_action" }
+    end
+
+    def commit_status_action_message(status)
+      context = status["context"].presence || "status"
+      state = commit_status_state(status)
+      url = status["target_url"].presence
+      description = status["description"].presence
+      message = "GitHub status \"#{context}\" #{state}."
+      message = "#{message} #{description}" if description.present?
+      url.present? ? "#{message} #{url}" : message
+    end
+
+    def commit_status_state(status)
+      case status["state"].to_s
+      when "success"
+        "success"
+      when "pending"
+        "pending"
+      when "failure", "error"
+        "failure"
+      else
+        "unknown"
+      end
+    end
+
+    def commit_status_activity_summary(status)
+      "checks #{commit_status_state(status)}"
     end
 
     def branch_update_push?(push)
@@ -405,7 +471,8 @@ module GithubPrBridge
       Time.zone.parse(
         source["updated_at"].presence || source["submitted_at"].presence ||
           source["completed_at"].presence || source["started_at"].presence ||
-          source["timestamp"].presence || Time.zone.now.iso8601
+          source["created_at"].presence || source["timestamp"].presence ||
+          Time.zone.now.iso8601
       )
     end
 

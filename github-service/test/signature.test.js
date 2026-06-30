@@ -74,9 +74,31 @@ test("normalizes push events", () => {
   assert.equal(normalized.push.after, "def456");
 });
 
+test("normalizes status events", () => {
+  const normalized = normalizeGitHubWebhook({
+    eventName: "status",
+    deliveryId: "delivery-status",
+    payload: {
+      sha: "abc123",
+      state: "success",
+      context: "ci/build",
+      repository: { full_name: "discourse/discourse" }
+    }
+  });
+
+  assert.equal(normalized.event_id, "delivery-status");
+  assert.equal(normalized.event_type, "status");
+  assert.equal(normalized.repository.full_name, "discourse/discourse");
+  assert.equal(normalized.status.state, "success");
+});
+
 test("rejects unsupported webhook events", () => {
   assert.throws(
-    () => normalizeGitHubWebhook({ eventName: "status", deliveryId: "delivery-3", payload: {} }),
+    () => normalizeGitHubWebhook({
+      eventName: "deployment_status",
+      deliveryId: "delivery-3",
+      payload: {}
+    }),
     /unsupported event/
   );
 });

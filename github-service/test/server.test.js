@@ -211,6 +211,47 @@ test("forwards valid push webhooks to Discourse", async () => {
   });
 });
 
+test("forwards valid status webhooks to Discourse", async () => {
+  const forwardedRequests = [];
+  const server = createServer({
+    config,
+    fetchImpl: async (url, options) => {
+      forwardedRequests.push({ url, options });
+      return jsonResponse({ ok: true, action: "created_commit_status_actions" }, 200);
+    }
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const body = JSON.stringify({
+      sha: "abc123",
+      state: "failure",
+      context: "ci/build",
+      repository: { full_name: "discourse/discourse" }
+    });
+
+    const response = await fetch(`${baseUrl}/github/webhook`, {
+      method: "POST",
+      headers: githubHeaders({ body, eventName: "status", deliveryId: "delivery-status" }),
+      body
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(forwardedRequests.length, 1);
+
+    assert.deepEqual(JSON.parse(forwardedRequests[0].options.body), {
+      event_id: "delivery-status",
+      event_type: "status",
+      repository: { full_name: "discourse/discourse" },
+      status: {
+        sha: "abc123",
+        state: "failure",
+        context: "ci/build",
+        repository: { full_name: "discourse/discourse" }
+      }
+    });
+  });
+});
+
 test("retries transient Discourse forwarding failures and logs attempts", async () => {
   const logs = [];
   const retryConfig = {
@@ -304,7 +345,11 @@ test("ignores unsupported GitHub events without forwarding", async () => {
     const body = JSON.stringify({ ref: "refs/heads/main" });
     const response = await fetch(`${baseUrl}/github/webhook`, {
       method: "POST",
-      headers: githubHeaders({ body, eventName: "status", deliveryId: "delivery-1" }),
+      headers: githubHeaders({
+        body,
+        eventName: "deployment_status",
+        deliveryId: "delivery-1"
+      }),
       body
     });
 
