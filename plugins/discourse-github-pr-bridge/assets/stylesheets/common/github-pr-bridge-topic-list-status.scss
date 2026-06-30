@@ -1,3 +1,22 @@
+.github-pr-bridge-dashboard {
+  .github-pr-bridge-dashboard__header {
+    margin: 0 0 1rem;
+
+    h1 {
+      margin-bottom: 0.25rem;
+    }
+
+    p {
+      margin: 0;
+      color: var(--primary-medium);
+    }
+  }
+
+  .github-pr-bridge-dashboard__empty {
+    color: var(--primary-medium);
+  }
+}
+
 .github-pr-bridge-topic-list-status {
   display: inline-flex;
   flex-wrap: wrap;

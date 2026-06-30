@@ -33,6 +33,30 @@ PR topics covering passing/approved, failing/changes-requested, draft/pending,
 and merged states with labels and recent-activity summaries. Re-running the
 script updates the same topics and mappings idempotently.
 
+## PR dashboard
+
+The plugin adds `/github-prs`, a filtered dashboard route that lists only topics
+with GitHub PR bridge mappings. The compact PR status column and PR metadata line
+are scoped to this dashboard route so normal Discourse topic lists remain
+unchanged.
+
+## GitHub App installation flow plan
+
+Manual repository webhooks are useful for local development, but production
+multi-repository use should move to a GitHub App:
+
+1. Add a GitHub App manifest/setup flow in the external service.
+2. Store installation IDs and selected repositories in service-side durable
+   storage, keyed by GitHub owner/repo full name.
+3. Use installation access tokens for GitHub API calls instead of a single
+   user-scoped `GITHUB_TOKEN`.
+4. Keep all mirrored PR topics in the single configured Discourse category.
+5. Preserve the repository in the topic title prefix, e.g.
+   `[owner/repo] PR #123: Title`. Optional repo tags can be added later for
+   filtering, but the title prefix is enough for the first multi-repo pass.
+6. Forward the same normalized event shape to Discourse so the plugin mapping
+   model remains keyed by `github_repo` + `github_pr_number`.
+
 ## GitHub service
 
 The service exposes:

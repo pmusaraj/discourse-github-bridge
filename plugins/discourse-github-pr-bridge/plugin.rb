@@ -23,9 +23,23 @@ after_initialize do
   require_relative "app/models/github_pr_bridge/comment_mapping"
   require_relative "app/jobs/regular/github_pr_bridge_send_event"
   require_relative "app/controllers/github_pr_bridge/events_controller"
+  require_relative "app/controllers/github_pr_bridge/prs_controller"
+
+  TopicQuery.add_custom_filter(:github_pr_bridge) do |results, topic_query|
+    if topic_query.options[:github_pr_bridge].to_s == "true"
+      results.joins(
+        "INNER JOIN github_pr_bridge_pr_topic_mappings " \
+          "ON github_pr_bridge_pr_topic_mappings.topic_id = topics.id"
+      )
+    else
+      results
+    end
+  end
 
   Discourse::Application.routes.append do
     post "/github-pr-bridge/events" => "github_pr_bridge/events#create"
+    get "/github-pr-bridge/prs" => "github_pr_bridge/prs#index"
+    get "/github-prs" => "github_pr_bridge/prs#index"
   end
 
   add_to_serializer(

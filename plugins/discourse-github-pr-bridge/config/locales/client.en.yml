@@ -1,6 +1,11 @@
 en:
   js:
     github_pr_bridge:
+      dashboard:
+        title: "GitHub PRs"
+        description: "Pull requests mirrored into this Discourse category."
+        aria_label: "GitHub pull request topics"
+        empty: "No mirrored pull requests yet."
       topic_list:
         status_column_label: "PR status"
         pr_label: "PR #%{number}"

@@ -5,10 +5,12 @@ import GithubPrBridgeTopicListStatusColumn from "../components/github-pr-bridge-
 import GithubPrBridgeTopicListStatusColumnHeader from "../components/github-pr-bridge-topic-list-status-column-header";
 
 export default apiInitializer((api) => {
+  const router = api.container.lookup("service:router");
+
   api.registerValueTransformer(
     "topic-list-columns",
-    ({ value: columns, context }) => {
-      if (context.category || (context.filter && context.filter !== "latest")) {
+    ({ value: columns }) => {
+      if (router.currentRouteName !== "github-pr-bridge-dashboard") {
         return;
       }
 
@@ -33,8 +35,14 @@ export default apiInitializer((api) => {
         return Boolean(args.topic?.github_pr_bridge_status);
       }
 
+      get onDashboard() {
+        return router.currentRouteName === "github-pr-bridge-dashboard";
+      }
+
       <template>
-        <GithubPrBridgeTopicListStatus @topic={{@topic}} />
+        {{#if this.onDashboard}}
+          <GithubPrBridgeTopicListStatus @topic={{@topic}} />
+        {{/if}}
       </template>
     }
   );
