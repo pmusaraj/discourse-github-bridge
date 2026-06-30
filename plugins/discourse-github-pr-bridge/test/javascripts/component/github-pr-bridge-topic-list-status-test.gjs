@@ -10,6 +10,7 @@ module("Component | GithubPrBridgeTopicListStatus", function (hooks) {
     this.set("topic", {
       github_pr_bridge_status: {
         github_pr_number: 123,
+        github_repo: "discourse/discourse",
         github_pr_url: "https://github.com/discourse/discourse/pull/123",
         github_pr_state: "open",
         github_pr_draft: false,
@@ -33,11 +34,23 @@ module("Component | GithubPrBridgeTopicListStatus", function (hooks) {
       .dom(".github-pr-bridge-topic-list-status__badge--pr")
       .hasAttribute("href", "https://github.com/discourse/discourse/pull/123");
     assert
+      .dom(".github-pr-bridge-topic-list-status__badge--pr")
+      .hasAttribute("data-pr-state", "open");
+    assert
+      .dom(".github-pr-bridge-topic-list-status__badge--pr")
+      .hasAttribute("title", "discourse/discourse");
+    assert
       .dom(".github-pr-bridge-topic-list-status__badge--checks")
       .hasText("checks passing");
     assert
+      .dom(".github-pr-bridge-topic-list-status__badge--checks")
+      .hasAttribute("data-checks-state", "success");
+    assert
       .dom(".github-pr-bridge-topic-list-status__badge--review")
       .hasText("approved");
+    assert
+      .dom(".github-pr-bridge-topic-list-status__badge--review")
+      .hasAttribute("data-review-state", "approved");
     assert
       .dom(".github-pr-bridge-topic-list-status__activity")
       .hasText("checks success");

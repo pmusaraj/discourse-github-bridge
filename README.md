@@ -19,6 +19,20 @@ The helper starts a localhost Redis forwarder inside the web container when need
 scripts/rspec-in-discourse-container.sh plugins/discourse-github-pr-bridge/spec/services/github_pr_bridge/event_processor_spec.rb
 ```
 
+## Local PR-list smoke fixtures
+
+To seed deterministic local topics for checking `/latest` or the smoke category topic
+list, run:
+
+```sh
+scripts/seed-pr-list-smoke-in-discourse-container.sh
+```
+
+The smoke data uses the synthetic `discourse/pr-list-smoke` repo and creates four
+PR topics covering passing/approved, failing/changes-requested, draft/pending,
+and merged states with labels and recent-activity summaries. Re-running the
+script updates the same topics and mappings idempotently.
+
 ## GitHub service
 
 The service exposes:
