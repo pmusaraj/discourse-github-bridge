@@ -35,6 +35,76 @@ test("verifies GitHub webhook signatures", () => {
   assert.equal(verifyGitHubSignature({ body, signatureHeader: "sha256=bad", secret: config.githubWebhookSecret }), false);
 });
 
+test("returns a deterministic GitHub App manifest", async () => {
+  const server = createServer({
+    config: {
+      ...config,
+      githubAppName: "Example PR Bridge",
+      serviceBaseUrl: "https://bridge.example.com"
+    },
+    fetchImpl: async () => jsonResponse({ ok: true }, 200)
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/github/app/manifest`);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      name: "Example PR Bridge",
+      url: "https://forum.example.com",
+      hook_attributes: {
+        url: "https://bridge.example.com/github/webhook",
+        active: true
+      },
+      redirect_url: "https://bridge.example.com/github/app/installations",
+      public: false,
+      default_permissions: {
+        checks: "read",
+        contents: "read",
+        issues: "write",
+        metadata: "read",
+        pull_requests: "read",
+        statuses: "read"
+      },
+      default_events: [
+        "check_run",
+        "check_suite",
+        "installation",
+        "installation_repositories",
+        "issue_comment",
+        "pull_request",
+        "pull_request_review",
+        "push",
+        "status"
+      ]
+    });
+  });
+});
+
+test("returns a GitHub App setup URL for organization-owned apps", async () => {
+  const server = createServer({
+    config: {
+      ...config,
+      githubAppOwner: "discourse",
+      serviceBaseUrl: "https://bridge.example.com"
+    },
+    fetchImpl: async () => jsonResponse({ ok: true }, 200)
+  });
+
+  await withListeningServer(server, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/github/app/setup`);
+    const setup = await response.json();
+    const createUrl = new URL(setup.create_url);
+    const manifest = JSON.parse(createUrl.searchParams.get("manifest"));
+
+    assert.equal(response.status, 200);
+    assert.equal(createUrl.origin + createUrl.pathname, "https://github.com/organizations/discourse/settings/apps/new");
+    assert.equal(manifest.name, "Discourse GitHub PR Bridge");
+    assert.equal(manifest.hook_attributes.url, "https://bridge.example.com/github/webhook");
+    assert.deepEqual(setup.manifest, manifest);
+  });
+});
+
 test("forwards valid pull_request webhooks to Discourse", async () => {
   const forwardedRequests = [];
   const server = createServer({

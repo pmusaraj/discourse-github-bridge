@@ -45,7 +45,8 @@ unchanged.
 Manual repository webhooks are useful for local development, but production
 multi-repository use should move to a GitHub App:
 
-1. Add a GitHub App manifest/setup flow in the external service.
+1. Use the external service's GitHub App manifest/setup endpoints to create the
+   app with the right permissions and webhook events.
 2. Store installation IDs and selected repositories in service-side durable
    storage, keyed by GitHub owner/repo full name.
 3. Use installation access tokens for GitHub API calls instead of a single
@@ -62,6 +63,8 @@ multi-repository use should move to a GitHub App:
 The service exposes:
 
 - `GET /health`
+- `GET /github/app/setup` to return a GitHub App creation URL plus manifest
+- `GET /github/app/manifest` to inspect the manifest JSON directly
 - `GET /github/app/installations` to inspect captured GitHub App repository mappings
 - `POST /github/webhook` for GitHub-originated webhooks, including GitHub App
   `installation` and `installation_repositories` events
@@ -79,6 +82,11 @@ Required environment variables:
   `installation` and `installation_repositories` webhooks. It maps repositories to
   GitHub App installation IDs, for example `{ "repositories": { "owner/repo": 12345 } }`.
   Repository keys are case-insensitive.
+- `GITHUB_APP_NAME`: optional display name for the generated GitHub App manifest.
+- `GITHUB_APP_OWNER`: optional GitHub organization login for the setup URL. If omitted,
+  the setup URL creates a user-owned app.
+- `SERVICE_BASE_URL`: optional public base URL for this service. The manifest uses it
+  for the webhook URL; if omitted, the service derives it from forwarded request headers.
 - `DISCOURSE_BASE_URL`: Base URL for the Discourse site, for example `https://forum.example.com`.
 - `DISCOURSE_SHARED_SECRET`: Shared secret that matches the Discourse `github_pr_bridge_shared_secret` site setting.
 - `PORT`: optional, defaults to `3000`.

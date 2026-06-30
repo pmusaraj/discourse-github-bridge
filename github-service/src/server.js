@@ -23,6 +23,14 @@ export function createServer({ config, fetchImpl = fetch } = {}) {
         return sendJson(response, 200, { ok: true });
       }
 
+      if (request.method === "GET" && request.url === "/github/app/setup") {
+        return sendJson(response, 200, githubAppSetupPayload({ config: resolvedConfig, request }));
+      }
+
+      if (request.method === "GET" && request.url === "/github/app/manifest") {
+        return sendJson(response, 200, githubAppManifest({ config: resolvedConfig, request }));
+      }
+
       if (request.method === "GET" && request.url === "/github/app/installations") {
         return sendJson(response, 200, {
           repositories: await githubAppInstallationStore.repositories()
@@ -170,6 +178,64 @@ export async function forwardToDiscourse({ event, config, fetchImpl = fetch }) {
 
 export function discourseEventsUrl(baseUrl) {
   return new URL("/github-pr-bridge/events.json", baseUrl).toString();
+}
+
+export function githubAppSetupPayload({ config, request }) {
+  const manifest = githubAppManifest({ config, request });
+  const createBaseUrl = config.githubAppOwner
+    ? `https://github.com/organizations/${encodeURIComponent(config.githubAppOwner)}/settings/apps/new`
+    : "https://github.com/settings/apps/new";
+  const createUrl = new URL(createBaseUrl);
+  createUrl.searchParams.set("manifest", JSON.stringify(manifest));
+
+  return {
+    create_url: createUrl.toString(),
+    manifest
+  };
+}
+
+export function githubAppManifest({ config, request }) {
+  const serviceBaseUrl = servicePublicBaseUrl({ config, request });
+
+  return {
+    name: config.githubAppName,
+    url: config.discourseBaseUrl,
+    hook_attributes: {
+      url: new URL("/github/webhook", serviceBaseUrl).toString(),
+      active: true
+    },
+    redirect_url: new URL("/github/app/installations", serviceBaseUrl).toString(),
+    public: false,
+    default_permissions: {
+      checks: "read",
+      contents: "read",
+      issues: "write",
+      metadata: "read",
+      pull_requests: "read",
+      statuses: "read"
+    },
+    default_events: [
+      "check_run",
+      "check_suite",
+      "installation",
+      "installation_repositories",
+      "issue_comment",
+      "pull_request",
+      "pull_request_review",
+      "push",
+      "status"
+    ]
+  };
+}
+
+function servicePublicBaseUrl({ config, request }) {
+  if (config.serviceBaseUrl) {
+    return config.serviceBaseUrl;
+  }
+
+  const proto = request.headers["x-forwarded-proto"] || "http";
+  const host = request.headers["x-forwarded-host"] || request.headers.host;
+  return `${proto}://${host}`;
 }
 
 async function handleGitHubAppInstallationEvent({ eventName, payload, githubAppInstallationStore }) {
@@ -762,6 +828,9 @@ function readConfig(config = {}) {
     githubAppInstallations: config.githubAppInstallations,
     githubAppInstallationsPath: config.githubAppInstallationsPath ?? process.env.GITHUB_APP_INSTALLATIONS_PATH,
     githubAppTokenCache: config.githubAppTokenCache ?? new Map(),
+    githubAppName: config.githubAppName ?? process.env.GITHUB_APP_NAME ?? "Discourse GitHub PR Bridge",
+    githubAppOwner: config.githubAppOwner ?? process.env.GITHUB_APP_OWNER,
+    serviceBaseUrl: config.serviceBaseUrl ?? process.env.SERVICE_BASE_URL,
     discourseBaseUrl: config.discourseBaseUrl ?? process.env.DISCOURSE_BASE_URL,
     discourseSharedSecret: config.discourseSharedSecret ?? process.env.DISCOURSE_SHARED_SECRET,
     processedEventsPath: config.processedEventsPath ?? process.env.PROCESSED_EVENTS_PATH,
@@ -771,7 +840,7 @@ function readConfig(config = {}) {
   };
 
   for (const [key, value] of Object.entries(resolved)) {
-    if (!["githubToken", "githubAppId", "githubAppPrivateKey", "githubAppPrivateKeyPath", "githubAppInstallations", "githubAppInstallationsPath", "githubAppTokenCache", "processedEventsPath", "retryAttempts", "retryDelayMs", "logger"].includes(key) && !value) {
+    if (!["githubToken", "githubAppId", "githubAppPrivateKey", "githubAppPrivateKeyPath", "githubAppInstallations", "githubAppInstallationsPath", "githubAppTokenCache", "githubAppName", "githubAppOwner", "serviceBaseUrl", "processedEventsPath", "retryAttempts", "retryDelayMs", "logger"].includes(key) && !value) {
       throw new Error(`${key} is required`);
     }
   }
