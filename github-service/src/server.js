@@ -16,6 +16,12 @@ export function createServer({ config, fetchImpl = fetch } = {}) {
   const resolvedConfig = readConfig(config);
   const processedDiscourseEventStore = createProcessedDiscourseEventStore(resolvedConfig.processedEventsPath);
   const githubAppInstallationStore = new GitHubAppInstallationStore(resolvedConfig);
+  const startupInstallationSync = shouldSyncGitHubAppInstallationsOnStart(resolvedConfig)
+    ? syncGitHubAppInstallations({ config: resolvedConfig, fetchImpl }).catch((error) => {
+      resolvedConfig.logger.warn("github_app_installation_sync_failed", { error: safeErrorName(error) });
+      return null;
+    })
+    : Promise.resolve(null);
 
   return http.createServer(async (request, response) => {
     try {
@@ -32,9 +38,22 @@ export function createServer({ config, fetchImpl = fetch } = {}) {
       }
 
       if (request.method === "GET" && request.url === "/github/app/installations") {
+        await startupInstallationSync;
         return sendJson(response, 200, {
           repositories: await githubAppInstallationStore.repositories()
         });
+      }
+
+      if (request.method === "POST" && request.url === "/github/app/installations/sync") {
+        if (!verifyAdminSecret({
+          secretHeader: request.headers["x-github-pr-bridge-admin-secret"],
+          secret: resolvedConfig.discourseSharedSecret
+        })) {
+          return sendJson(response, 403, { error: "invalid admin secret" });
+        }
+
+        const result = await syncGitHubAppInstallations({ config: resolvedConfig, fetchImpl });
+        return sendJson(response, 200, result);
       }
 
       if (request.method === "POST" && request.url === "/discourse/events") {
@@ -126,6 +145,10 @@ export function verifyDiscourseSignature({ body, timestamp, signatureHeader, sec
 
   const expected = signDiscourseRequest({ body, timestamp, secret });
   return timingSafeStringEqual(signatureHeader, expected);
+}
+
+function verifyAdminSecret({ secretHeader, secret }) {
+  return Boolean(secretHeader && secret) && timingSafeStringEqual(secretHeader, secret);
 }
 
 function timingSafeStringEqual(actual, expected) {
@@ -328,6 +351,12 @@ class GitHubAppInstallationStore {
     return repositoriesToRemove;
   }
 
+  async replaceRepositories(data) {
+    const normalized = normalizeInstallationMap(data);
+    await this.save(normalized);
+    return normalized;
+  }
+
   async load() {
     if (this.config.githubAppInstallationsCache) {
       return this.config.githubAppInstallationsCache;
@@ -440,6 +469,144 @@ function validateDiscoursePostPayload(payload) {
   }
 
   return null;
+}
+
+export async function syncGitHubAppInstallations({ config, fetchImpl = fetch }) {
+  const store = new GitHubAppInstallationStore(config);
+  const installations = await fetchGitHubAppInstallations({ config, fetchImpl });
+  const repositories = {};
+
+  for (const installation of installations) {
+    const installationId = installation.id;
+    if (!installationId) {
+      continue;
+    }
+
+    const token = await createGitHubAppInstallationToken({ installationId, config, fetchImpl });
+    const installationRepositories = await fetchGitHubInstallationRepositories({ token, fetchImpl });
+    for (const repository of installationRepositories) {
+      if (repository.full_name) {
+        repositories[repository.full_name.toLowerCase()] = installationId;
+      }
+    }
+  }
+
+  const normalized = await store.replaceRepositories(repositories);
+  return {
+    ok: true,
+    action: "synced_installation_repositories",
+    installations: installations.length,
+    repositories: normalized
+  };
+}
+
+function shouldSyncGitHubAppInstallationsOnStart(config) {
+  return config.githubAppSyncOnStart !== false
+    && !config.githubToken
+    && Boolean(config.githubAppId)
+    && Boolean(config.githubAppPrivateKey || config.githubAppPrivateKeyPath)
+    && Boolean(config.githubAppInstallationsPath || config.githubAppInstallations);
+}
+
+async function fetchGitHubAppInstallations({ config, fetchImpl }) {
+  const jwt = await createGitHubAppJwt(config);
+  const installations = [];
+  let url = githubAppInstallationsUrl();
+
+  while (url) {
+    const response = await fetchImpl(url, {
+      headers: githubAppApiHeaders(`Bearer ${jwt}`)
+    });
+    const responseBody = await parseResponseBody(response);
+
+    if (!response.ok) {
+      const message = typeof responseBody === "string" ? responseBody : responseBody?.message;
+      throw new Error(`GitHub App installations request failed: ${response.status}${message ? ` ${message}` : ""}`);
+    }
+
+    if (!Array.isArray(responseBody)) {
+      throw new Error("GitHub App installations response must be an array");
+    }
+
+    installations.push(...responseBody);
+    url = nextPageUrl(response.headers.get("link"));
+  }
+
+  return installations;
+}
+
+async function createGitHubAppInstallationToken({ installationId, config, fetchImpl }) {
+  const jwt = await createGitHubAppJwt(config);
+  const response = await fetchImpl(githubAppInstallationTokenUrl({ installationId }), {
+    method: "POST",
+    headers: githubAppApiHeaders(`Bearer ${jwt}`)
+  });
+  const responseBody = await parseResponseBody(response);
+
+  if (!response.ok) {
+    const message = typeof responseBody === "string" ? responseBody : responseBody?.message;
+    throw new Error(`GitHub App installation token request failed: ${response.status}${message ? ` ${message}` : ""}`);
+  }
+
+  if (!responseBody?.token) {
+    throw new Error("GitHub App installation token response missing token");
+  }
+
+  return responseBody.token;
+}
+
+async function fetchGitHubInstallationRepositories({ token, fetchImpl }) {
+  const repositories = [];
+  let url = githubInstallationRepositoriesUrl();
+
+  while (url) {
+    const response = await fetchImpl(url, {
+      headers: githubAppApiHeaders(`Bearer ${token}`)
+    });
+    const responseBody = await parseResponseBody(response);
+
+    if (!response.ok) {
+      const message = typeof responseBody === "string" ? responseBody : responseBody?.message;
+      throw new Error(`GitHub installation repositories request failed: ${response.status}${message ? ` ${message}` : ""}`);
+    }
+
+    repositories.push(...(responseBody?.repositories ?? []));
+    url = nextPageUrl(response.headers.get("link"));
+  }
+
+  return repositories;
+}
+
+function githubAppInstallationsUrl() {
+  return new URL("/app/installations?per_page=100", GITHUB_API_BASE_URL).toString();
+}
+
+function githubInstallationRepositoriesUrl() {
+  return new URL("/installation/repositories?per_page=100", GITHUB_API_BASE_URL).toString();
+}
+
+function nextPageUrl(linkHeader) {
+  if (!linkHeader) {
+    return null;
+  }
+
+  for (const link of linkHeader.split(",")) {
+    const match = link.match(/<([^>]+)>;\s*rel="([^"]+)"/);
+    if (match?.[2] === "next") {
+      return match[1];
+    }
+  }
+
+  return null;
+}
+
+function githubAppApiHeaders(authorization) {
+  return {
+    "accept": "application/vnd.github+json",
+    "authorization": authorization,
+    "user-agent": "discourse-github-pr-bridge",
+    "x-github-api-version": "2022-11-28"
+  };
 }
 
 export async function createGitHubIssueComment({ payload, config, fetchImpl = fetch }) {
@@ -795,6 +962,17 @@ function numberConfig(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function booleanConfig(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  return !["0", "false", "no", "off"].includes(String(value).toLowerCase());
+}
+
 function createJsonLogger() {
   return {
     info: (message, fields = {}) => writeJsonLog("info", message, fields),
@@ -827,6 +1005,7 @@ function readConfig(config = {}) {
     githubAppPrivateKeyPath: config.githubAppPrivateKeyPath ?? process.env.GITHUB_APP_PRIVATE_KEY_PATH,
     githubAppInstallations: config.githubAppInstallations,
     githubAppInstallationsPath: config.githubAppInstallationsPath ?? process.env.GITHUB_APP_INSTALLATIONS_PATH,
+    githubAppSyncOnStart: booleanConfig(config.githubAppSyncOnStart ?? process.env.GITHUB_APP_SYNC_ON_START, true),
     githubAppTokenCache: config.githubAppTokenCache ?? new Map(),
     githubAppName: config.githubAppName ?? process.env.GITHUB_APP_NAME ?? "Discourse GitHub PR Bridge",
     githubAppOwner: config.githubAppOwner ?? process.env.GITHUB_APP_OWNER,
@@ -840,7 +1019,7 @@ function readConfig(config = {}) {
   };
 
   for (const [key, value] of Object.entries(resolved)) {
-    if (!["githubToken", "githubAppId", "githubAppPrivateKey", "githubAppPrivateKeyPath", "githubAppInstallations", "githubAppInstallationsPath", "githubAppTokenCache", "githubAppName", "githubAppOwner", "serviceBaseUrl", "processedEventsPath", "retryAttempts", "retryDelayMs", "logger"].includes(key) && !value) {
+    if (!["githubToken", "githubAppId", "githubAppPrivateKey", "githubAppPrivateKeyPath", "githubAppInstallations", "githubAppInstallationsPath", "githubAppSyncOnStart", "githubAppTokenCache", "githubAppName", "githubAppOwner", "serviceBaseUrl", "processedEventsPath", "retryAttempts", "retryDelayMs", "logger"].includes(key) && !value) {
       throw new Error(`${key} is required`);
     }
   }

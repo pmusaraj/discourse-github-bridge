@@ -12,6 +12,7 @@ import {
   forwardToDiscourse,
   githubAppInstallationIdForRepo,
   githubAppInstallationTokenUrl,
+  syncGitHubAppInstallations,
   githubIssueCommentsUrl,
   verifyGitHubSignature
 } from "../src/server.js";
@@ -572,6 +573,138 @@ test("exposes captured GitHub App installation mappings", async () => {
       repositories: { "discourse/discourse": 98765 }
     });
   });
+});
+
+test("syncs GitHub App installations from GitHub into durable storage", async () => {
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const tempDir = await mkdtemp(join(tmpdir(), "github-pr-bridge-installations-sync-"));
+  const installationsPath = join(tempDir, "installations.json");
+  const requests = [];
+  const appConfig = {
+    ...config,
+    githubToken: "",
+    githubAppId: "12345",
+    githubAppPrivateKey: privateKey.export({ type: "pkcs1", format: "pem" }),
+    githubAppInstallationsPath: installationsPath
+  };
+
+  try {
+    const result = await syncGitHubAppInstallations({
+      config: appConfig,
+      fetchImpl: async (url, options = {}) => {
+        requests.push({ url, options });
+        if (url === "https://api.github.com/app/installations?per_page=100") {
+          return new Response(JSON.stringify([{ id: 98765 }]), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "link": "<https://api.github.com/app/installations?per_page=100&page=2>; rel=\"next\""
+            }
+          });
+        }
+        if (url === "https://api.github.com/app/installations?per_page=100&page=2") {
+          return jsonResponse([{ id: 22222 }], 200);
+        }
+        if (url === githubAppInstallationTokenUrl({ installationId: 98765 })) {
+          return jsonResponse({ token: "installation-token-98765", expires_at: new Date(Date.now() + 3600_000).toISOString() }, 201);
+        }
+        if (url === githubAppInstallationTokenUrl({ installationId: 22222 })) {
+          return jsonResponse({ token: "installation-token-22222", expires_at: new Date(Date.now() + 3600_000).toISOString() }, 201);
+        }
+        if (url === "https://api.github.com/installation/repositories?per_page=100") {
+          const token = options.headers.authorization.replace("Bearer ", "");
+          if (token === "installation-token-98765") {
+            return new Response(JSON.stringify({
+              repositories: [{ full_name: "Discourse/Discourse" }]
+            }), {
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+                "link": "<https://api.github.com/installation/repositories?per_page=100&page=2>; rel=\"next\""
+              }
+            });
+          }
+          return jsonResponse({ repositories: [{ full_name: "other/repo" }] }, 200);
+        }
+        if (url === "https://api.github.com/installation/repositories?per_page=100&page=2") {
+          return jsonResponse({ repositories: [{ full_name: "discourse/discourse-ai" }] }, 200);
+        }
+        throw new Error(`unexpected request: ${url}`);
+      }
+    });
+
+    assert.deepEqual(result, {
+      ok: true,
+      action: "synced_installation_repositories",
+      installations: 2,
+      repositories: {
+        "discourse/discourse": 98765,
+        "discourse/discourse-ai": 98765,
+        "other/repo": 22222
+      }
+    });
+    assert.deepEqual(JSON.parse(await readInstallationsFile(installationsPath)), {
+      repositories: {
+        "discourse/discourse": 98765,
+        "discourse/discourse-ai": 98765,
+        "other/repo": 22222
+      }
+    });
+    assert.equal(requests.filter((request) => request.url.includes("/access_tokens")).length, 2);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("protects and runs the manual GitHub App installation sync endpoint", async () => {
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const tempDir = await mkdtemp(join(tmpdir(), "github-pr-bridge-installations-sync-endpoint-"));
+  const installationsPath = join(tempDir, "installations.json");
+  const server = createServer({
+    config: {
+      ...config,
+      githubToken: "",
+      githubAppId: "12345",
+      githubAppPrivateKey: privateKey.export({ type: "pkcs1", format: "pem" }),
+      githubAppInstallationsPath: installationsPath,
+      githubAppSyncOnStart: false
+    },
+    fetchImpl: async (url, options = {}) => {
+      if (url === "https://api.github.com/app/installations?per_page=100") {
+        return jsonResponse([{ id: 98765 }], 200);
+      }
+      if (url === githubAppInstallationTokenUrl({ installationId: 98765 })) {
+        return jsonResponse({ token: "installation-token", expires_at: new Date(Date.now() + 3600_000).toISOString() }, 201);
+      }
+      if (url === "https://api.github.com/installation/repositories?per_page=100") {
+        assert.equal(options.headers.authorization, "Bearer installation-token");
+        return jsonResponse({ repositories: [{ full_name: "discourse/discourse" }] }, 200);
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }
+  });
+
+  try {
+    await withListeningServer(server, async (baseUrl) => {
+      const unauthorized = await fetch(`${baseUrl}/github/app/installations/sync`, { method: "POST" });
+      assert.equal(unauthorized.status, 403);
+
+      const response = await fetch(`${baseUrl}/github/app/installations/sync`, {
+        method: "POST",
+        headers: { "x-github-pr-bridge-admin-secret": config.discourseSharedSecret }
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        action: "synced_installation_repositories",
+        installations: 1,
+        repositories: { "discourse/discourse": 98765 }
+      });
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("returns a gateway error when Discourse rejects the forwarded event", async () => {

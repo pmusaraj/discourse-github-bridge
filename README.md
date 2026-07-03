@@ -40,23 +40,46 @@ with GitHub PR bridge mappings. The compact PR status column and PR metadata lin
 are scoped to this dashboard route so normal Discourse topic lists remain
 unchanged.
 
-## GitHub App installation flow plan
+## GitHub App installation flow
 
 Manual repository webhooks are useful for local development, but production
-multi-repository use should move to a GitHub App:
+multi-repository use should use a GitHub App:
 
-1. Use the external service's GitHub App manifest/setup endpoints to create the
-   app with the right permissions and webhook events.
-2. Store installation IDs and selected repositories in service-side durable
-   storage, keyed by GitHub owner/repo full name.
-3. Use installation access tokens for GitHub API calls instead of a single
-   user-scoped `GITHUB_TOKEN`.
-4. Keep all mirrored PR topics in the single configured Discourse category.
-5. Preserve the repository in the topic title prefix, e.g.
-   `[owner/repo] PR #123: Title`. Optional repo tags can be added later for
-   filtering, but the title prefix is enough for the first multi-repo pass.
-6. Forward the same normalized event shape to Discourse so the plugin mapping
-   model remains keyed by `github_repo` + `github_pr_number`.
+1. Create a GitHub App with the manifest/setup endpoint or fill the app fields
+   manually from `GET /github/app/manifest`.
+2. Configure the app webhook URL to the public bridge-service
+   `/github/webhook` URL and use the same `GITHUB_WEBHOOK_SECRET` configured in
+   the service.
+3. Grant repository permissions: checks read, contents read, issues write,
+   metadata read, pull requests read, and commit statuses read.
+4. Subscribe to events: check run, check suite, installation, installation
+   repositories, issue comment, pull request, pull request review, push, and
+   status.
+5. Install the app on the selected repositories.
+6. Configure the service with `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` or
+   `GITHUB_APP_PRIVATE_KEY_PATH`, and `GITHUB_APP_INSTALLATIONS_PATH`.
+7. Verify captured or synced installations with
+   `GET /github/app/installations`.
+
+The service records installation IDs and selected repositories in durable
+storage keyed by GitHub owner/repo full name, then uses installation access
+tokens for GitHub API calls instead of a single user-scoped `GITHUB_TOKEN`.
+Mirrored PR topics stay in the single configured Discourse category and include
+the repository in the topic title prefix, e.g. `[owner/repo] PR #123: Title`.
+The plugin mapping model remains keyed by `github_repo` + `github_pr_number`.
+
+If the app is installed but `GET /github/app/installations` does not show the
+repo, run a manual reconciliation:
+
+```sh
+curl -X POST \
+  -H "x-github-pr-bridge-admin-secret: $DISCOURSE_SHARED_SECRET" \
+  "$SERVICE_BASE_URL/github/app/installations/sync"
+```
+
+The service also attempts this reconciliation on startup when GitHub App
+credentials and `GITHUB_APP_INSTALLATIONS_PATH` are configured. Set
+`GITHUB_APP_SYNC_ON_START=false` to disable startup sync.
 
 ## GitHub service
 
@@ -66,6 +89,8 @@ The service exposes:
 - `GET /github/app/setup` to return a GitHub App creation URL plus manifest
 - `GET /github/app/manifest` to inspect the manifest JSON directly
 - `GET /github/app/installations` to inspect captured GitHub App repository mappings
+- `POST /github/app/installations/sync` to reconcile installation mappings from GitHub
+  using the `x-github-pr-bridge-admin-secret` header
 - `POST /github/webhook` for GitHub-originated webhooks, including GitHub App
   `installation` and `installation_repositories` events
 - `POST /discourse/events` for signed Discourse-originated events that should call GitHub
@@ -79,9 +104,13 @@ Required environment variables:
 - `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_PATH`: optional GitHub App private key.
   `GITHUB_APP_PRIVATE_KEY` may contain escaped `\n` sequences.
 - `GITHUB_APP_INSTALLATIONS_PATH`: optional JSON file populated from GitHub App
-  `installation` and `installation_repositories` webhooks. It maps repositories to
-  GitHub App installation IDs, for example `{ "repositories": { "owner/repo": 12345 } }`.
-  Repository keys are case-insensitive.
+  `installation` and `installation_repositories` webhooks or reconciliation sync.
+  It maps repositories to GitHub App installation IDs, for example
+  `{ "repositories": { "owner/repo": 12345 } }`. Repository keys are
+  case-insensitive.
+- `GITHUB_APP_SYNC_ON_START`: optional, defaults to `true`. When GitHub App
+  credentials and `GITHUB_APP_INSTALLATIONS_PATH` are configured, reconcile
+  installed repositories from GitHub on service startup.
 - `GITHUB_APP_NAME`: optional display name for the generated GitHub App manifest.
 - `GITHUB_APP_OWNER`: optional GitHub organization login for the setup URL. If omitted,
   the setup URL creates a user-owned app.
