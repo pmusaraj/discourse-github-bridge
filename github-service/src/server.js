@@ -234,7 +234,7 @@ export function githubAppManifest({ config, request }) {
       contents: "read",
       issues: "write",
       metadata: "read",
-      pull_requests: "read",
+      pull_requests: "write",
       statuses: "read"
     },
     default_events: [

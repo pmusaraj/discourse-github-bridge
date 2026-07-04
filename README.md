@@ -51,7 +51,7 @@ multi-repository use should use a GitHub App:
    `/github/webhook` URL and use the same `GITHUB_WEBHOOK_SECRET` configured in
    the service.
 3. Grant repository permissions: checks read, contents read, issues write,
-   metadata read, pull requests read, and commit statuses read.
+   metadata read, pull requests write, and commit statuses read.
 4. Subscribe to events: check run, check suite, installation, installation
    repositories, issue comment, pull request, pull request review, push, and
    status.
@@ -64,6 +64,9 @@ multi-repository use should use a GitHub App:
 The service records installation IDs and selected repositories in durable
 storage keyed by GitHub owner/repo full name, then uses installation access
 tokens for GitHub API calls instead of a single user-scoped `GITHUB_TOKEN`.
+Reverse-sync comments use the issues comments API for PR conversations; the app
+needs pull request write permission in addition to issues write permission to
+avoid GitHub `Resource not accessible by integration` responses on PR comments.
 Mirrored PR topics stay in the single configured Discourse category and include
 the repository in the topic title prefix, e.g. `[owner/repo] PR #123: Title`.
 The plugin mapping model remains keyed by `github_repo` + `github_pr_number`.

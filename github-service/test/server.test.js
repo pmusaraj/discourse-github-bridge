@@ -64,7 +64,7 @@ test("returns a deterministic GitHub App manifest", async () => {
         contents: "read",
         issues: "write",
         metadata: "read",
-        pull_requests: "read",
+        pull_requests: "write",
         statuses: "read"
       },
       default_events: [
