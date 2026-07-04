@@ -338,6 +338,32 @@ RSpec.describe GithubPrBridge::EventProcessor do
     expect(result[:action]).to eq("skipped_mapped_comment")
   end
 
+  it "skips GitHub comments that were originally mirrored from Discourse" do
+    created_topic =
+      described_class.call(
+        pull_request_payload(event_id: "delivery-1", title: "Add feature")
+      )
+
+    result =
+      described_class.call(
+        issue_comment_payload.merge(
+          "event_id" => "delivery-discourse-originated-comment",
+          "comment" => issue_comment_payload["comment"].merge(
+            "id" => 654,
+            "body" => "Thanks\n\n— via Discourse by @penar (https://forum.example.com/t/topic/1/2)",
+            "user" => { "login" => "discourse-github-prs-bridge[bot]" }
+          )
+        )
+      )
+
+    expect(result).to include(
+      topic_id: created_topic[:topic_id],
+      action: "skipped_discourse_originated_comment"
+    )
+    expect(GithubPrBridge::CommentMapping.exists?(github_comment_id: 654)).to eq(false)
+    expect(Topic.find(created_topic[:topic_id]).posts_count).to eq(1)
+  end
+
   def pull_request_payload(event_id:, title:, pr_attrs: {}, labels: ["feature"])
     {
       "event_id" => event_id,

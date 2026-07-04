@@ -166,6 +166,10 @@ module GithubPrBridge
         )
       raise InvalidPayload, "unmapped pull request" if mapping.blank?
 
+      if discourse_originated_comment?(comment)
+        return { topic_id: mapping.topic_id, action: "skipped_discourse_originated_comment" }
+      end
+
       github_comment_id = comment["id"]
       if github_comment_id.present?
         return(
@@ -487,6 +491,10 @@ module GithubPrBridge
       MD
 
       PostCreator.create!(system_user, topic_id: mapping.topic_id, raw: raw)
+    end
+
+    def discourse_originated_comment?(comment)
+      comment["body"].to_s.include?("— via Discourse by @")
     end
 
     def create_topic(pr, repo_full_name)
